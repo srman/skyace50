@@ -59,21 +59,29 @@ function compact(a, keep) { let j = 0; for (let i = 0; i < a.length; i++) { cons
 // ======================================================================
 const SAVE_KEY = "skyace50_v1";
 const UPS = [
-  { k: "atk", name: "공격력", desc: "모든 총알 피해 +15%", base: 60, max: 40, ex: 1.6 },
-  { k: "rate", name: "연사 속도", desc: "발사 간격 7% 단축", base: 90, max: 10, ex: 2.0 },
-  { k: "hp", name: "장갑", desc: "최대 체력 +25", base: 50, max: 40, ex: 1.6 },
   { k: "mag", name: "자석", desc: "코인을 끌어오는 범위 증가", base: 50, max: 5, ex: 2.0 },
   { k: "bomb", name: "폭탄 탑재", desc: "출격할 때 폭탄 +1", base: 150, max: 4, ex: 2.0 },
   { k: "wing", name: "호위기", desc: "함께 싸우는 보조기 (최대 2대)", base: 600, max: 2, ex: 2.0 },
 ];
 function freshSave() {
   return { v: 1, unlocked: 1, gold: 0, xp: 0, lvl: 1, wl: 1, sound: true, saver: true,
-    up: { atk: 0, rate: 0, hp: 0, mag: 0, bomb: 0, wing: 0 }, best: {}, cleared: {}, clear100: false, clear200: false };
+    up: { mag: 0, bomb: 0, wing: 0 }, parts: freshParts(), scrap: 0, best: {}, cleared: {}, clear100: false, clear200: false };
 }
 function loadSave() {
   try {
     const d = JSON.parse(localStorage.getItem(SAVE_KEY));
-    if (d && d.v === 1) { const f = freshSave(); return Object.assign(f, d, { up: Object.assign(f.up, d.up || {}) }); }
+    if (d && d.v === 1) {
+      const s = Object.assign(freshSave(), d, { up: Object.assign(freshSave().up, d.up || {}) });
+      if (!d.parts) {
+        // 예전 강화(공격력·연사·장갑)는 파츠로 바뀌었으므로 쓴 골드를 돌려준다
+        const old = { atk: [60, 1.6], rate: [90, 2], hp: [50, 1.6] }; let refund = 0;
+        for (const k in old) for (let l = 0; l < (s.up[k] || 0); l++) refund += Math.round(old[k][0] * Math.pow(1 + l, old[k][1]) / 10) * 10;
+        s.gold += refund; s.refund = refund;
+      }
+      delete s.up.atk; delete s.up.rate; delete s.up.hp;
+      s.parts = Object.assign(freshParts(), d.parts || {});
+      return s;
+    }
   } catch (e) {}
   return freshSave();
 }
@@ -86,9 +94,124 @@ function buyUp(u) {
   SV.gold -= c; SV.up[u.k]++; persist(); return true;
 }
 function xpNeed(l) { return Math.round(20 + 14 * Math.pow(l, 1.5)); }
-function maxHP() { return 100 + 25 * SV.up.hp + 4 * (SV.lvl - 1); }
-function dmgBase() { return 10 * (1 + 0.15 * SV.up.atk) * (1 + 0.03 * (SV.lvl - 1)); }
-function fireInt() { return 0.12 * Math.pow(0.93, SV.up.rate); }
+function maxHP() { return 100 + wingHP() + 4 * (SV.lvl - 1); }
+function dmgBase() { return 10 * gunMul() * (1 + 0.03 * (SV.lvl - 1)); }
+function fireInt() { return 0.12 * engMul(); }
+
+// ======================================================================
+// 기체 파츠 — 등급(Mk1~Mk5)마다 성능과 모양이 달라지고, 같은 등급 안에서 +10까지 강화
+// ======================================================================
+const TIERS = [
+  { n: "Mk1", col: "#e0e0e0", lv: 1, gold: 0, parts: 0 },
+  { n: "Mk2", col: "#69f0ae", lv: 12, gold: 1000, parts: 5 },
+  { n: "Mk3", col: "#40c4ff", lv: 35, gold: 5000, parts: 15 },
+  { n: "Mk4", col: "#e040fb", lv: 65, gold: 15000, parts: 35 },
+  { n: "Mk5", col: "#ffd740", lv: 95, gold: 40000, parts: 70 },
+];
+const POD_T1 = { n: "Mk1", col: "#e0e0e0", lv: 5, gold: 300, parts: 0 };
+const ENH_MAX = 10, ENH_BASE = [15, 60, 180, 450, 900];
+const SLOTS = [
+  { k: "gun", name: "주포", names: ["7.7mm 기관총", "12.7mm 중기관총", "20mm 기관포", "30mm 리볼버포", "플라즈마 캐논"] },
+  { k: "eng", name: "엔진", names: ["피스톤 엔진", "슈퍼차저 엔진", "터보프롭 엔진", "제트 엔진", "애프터버너"] },
+  { k: "wing", name: "날개", names: ["직선 날개", "강화 날개", "후퇴익", "델타익", "카나드 델타익"] },
+  { k: "arm", name: "장갑", names: ["알루미늄 장갑", "강철 장갑", "티타늄 장갑", "복합 장갑", "에너지 장갑"] },
+  { k: "pod", name: "미사일", names: ["소형 유도탄", "쌍발 유도탄", "유도탄 포드", "대형 유도탄 포드", "스웜 미사일"] },
+];
+function freshParts() { return { gun: { t: 1, k: 0 }, eng: { t: 1, k: 0 }, wing: { t: 1, k: 0 }, arm: { t: 1, k: 0 }, pod: { t: 0, k: 0 } }; }
+function PT(k) { return SV.parts[k]; }
+function gunMul(p) { p = p || PT("gun"); return [1, 1.6, 2.5, 3.6, 5.2][p.t - 1] * (1 + 0.04 * p.k); }
+function engMul(p) { p = p || PT("eng"); return [1, 0.88, 0.78, 0.68, 0.6][p.t - 1] * (1 - 0.01 * p.k); }
+function wingHP(p) { p = p || PT("wing"); return [0, 120, 280, 480, 720][p.t - 1] + 12 * p.k; }
+function armPct(p) { p = p || PT("arm"); return [0, 8, 15, 22, 30][p.t - 1] + 0.6 * p.k; }
+function podSpec(p) {
+  p = p || PT("pod"); if (!p.t) return null; const i = p.t - 1;
+  return { n: [1, 2, 2, 4, 4][i], int: [1.2, 1.0, 0.8, 0.8, 0.6][i] * (1 - 0.02 * p.k), d: [2, 2, 3, 3, 3.5][i] };
+}
+function slotEffect(k, p) {
+  switch (k) {
+    case "gun": return "총알 피해 ×" + gunMul(p).toFixed(2);
+    case "eng": return "연사 속도 +" + Math.round((1 / engMul(p) - 1) * 100) + "%";
+    case "wing": return "체력 +" + wingHP(p) + (p.t >= 3 ? "·기관총" : "");
+    case "arm": return "받는 피해 -" + armPct(p).toFixed(1) + "%";
+    case "pod": { const q = podSpec(p); return q ? "유도탄 " + q.n + "발·" + q.int.toFixed(2) + "초" : "장착 안 됨"; }
+  }
+}
+function nextTier(k) { const p = PT(k); if (p.t >= 5) return null; return k === "pod" && p.t === 0 ? POD_T1 : TIERS[p.t]; }
+function craft(k) {
+  const n = nextTier(k);
+  if (!n || SV.lvl < n.lv || SV.gold < n.gold || SV.scrap < n.parts) return false;
+  SV.gold -= n.gold; SV.scrap -= n.parts; const p = PT(k); p.t++; p.k = 0; persist(); return true;
+}
+function enhCost(k) { const p = PT(k); return p.t ? ENH_BASE[p.t - 1] * (p.k + 1) : 0; }
+function enhance(k) {
+  const p = PT(k); if (!p.t || p.k >= ENH_MAX) return false;
+  const c = enhCost(k); if (SV.gold < c) return false;
+  SV.gold -= c; p.k++; persist(); return true;
+}
+function power() {
+  const q = podSpec(), side = PT("wing").t >= 3 ? 0.14 : 0;
+  return Math.round(dmgBase() / fireInt() * (1 + side + (q ? q.n * q.d / q.int * 0.02 : 0)) + maxHP() * 0.6 / (1 - armPct() / 100));
+}
+// 장착한 파츠로 기체 도트를 조립한다 (반쪽 9칸 × 16줄, 좌우 대칭)
+const PLANE_L = {
+  fus: [".........", "........l", ".......ml", ".......mc", ".......mc", ".......mm", ".......mm", ".......mm", ".......mm", ".......mm", ".......dm", ".......dm", "........m", "........d", ".........", "........."],
+  wing: [
+    { 6: ".dmmmmmm.", 7: ".mllllll.", 8: ".dmmmmmm." },
+    { 5: "....mmmm.", 6: "dmmmmmmm.", 7: "mlllllll.", 8: "dmmmmmmm.", 9: "....dddd." },
+    { 5: "......mm.", 6: ".....mmm.", 7: "...mmmlm.", 8: ".mmmllmm.", 9: "dmmmmmmm.", 10: "dd..dddd." },
+    { 4: "......mm.", 5: ".....mmm.", 6: "....mmlm.", 7: "...mmllm.", 8: "..mmlllm.", 9: ".mmlllmm.", 10: "dmmmmmmm.", 11: "ddddddd.." },
+    { 2: ".....dm..", 3: "....dmm..", 5: ".....mmm.", 6: "....mmlm.", 7: "..mmmllm.", 8: ".mmlllmm.", 9: "mmllllmm.", 10: "mmmmmmmm.", 11: "Gddddddd.", 12: "G........" },
+  ],
+  eng: [
+    { 12: ".....dmm.", 13: "......dd.", 14: "........e" },
+    { 11: "......mm.", 12: "....dmmm.", 13: ".....ddd.", 14: ".......ee" },
+    { 11: "....mmmm.", 12: "...dmmmm.", 13: "....e.ee." },
+    { 10: "....mm...", 11: "...mmmmm.", 12: "..dmmmmm.", 13: "...e..ee." },
+    { 10: "...lmm...", 11: "..mmmmmm.", 12: ".dmmmmmmm", 13: "..e..e.ee" },
+  ],
+  gun: [
+    { 0: "........g", 1: "........g" },
+    { 0: "........g", 1: "........g", 3: "......g..", 4: "......g.." },
+    { 0: "......g.g", 1: "......g.g", 2: "......g..", 3: "......g.." },
+    { 0: "......G.g", 1: "......g.g", 2: ".....gg..", 3: ".....g...", 5: "..g......", 6: "..g......" },
+    { 0: "...G..G.G", 1: "...g..g.g", 2: "...g.gg..", 3: "...g.g...", 4: "...g.....", 5: "...g....." },
+  ],
+  pod: [
+    {},
+    { 8: "...p.....", 9: "...p....." },
+    { 8: "...pp....", 9: "...pp....", 10: "...dd...." },
+    { 7: "...pp....", 8: "..ppp....", 9: "..ppp....", 10: "...rr...." },
+    { 7: "..ppp....", 8: ".pppp....", 9: ".pppp....", 10: "..rr....." },
+    { 6: "..GGp....", 7: ".ppppp...", 8: ".ppppp...", 9: ".ppppp...", 10: ".rr.rr..." },
+  ],
+};
+const ARM_PAL = [["#4caf50", "#1b5e20", "#81c784"], ["#78909c", "#37474f", "#b0bec5"], ["#1e88e5", "#0d47a1", "#64b5f6"], ["#8e24aa", "#4a148c", "#ce93d8"], ["#ffb300", "#4e342e", "#ffe082"]];
+const FLAME = [["#ffcc80", "#ff9800"], ["#ffe082", "#ff6f00"], ["#b3e5fc", "#29b6f6"], ["#e1bee7", "#ab47bc"], ["#ffffff", "#ffd740"]];
+const BCOL = ["#fff59d", "#ffcc80", "#80deea", "#ea80fc", "#fff176"];
+const PLC = { key: "" };
+function planeSprites(P) {
+  P = P || SV.parts;
+  const key = [P.gun.t, P.eng.t, P.wing.t, P.arm.t, P.pod.t].join();
+  if (PLC.key === key) return PLC;
+  const g = Array.from({ length: 16 }, () => ".........".split(""));
+  const lay = L => { for (const r in L) [...L[r]].forEach((ch, x) => { if (ch !== ".") g[r][x] = ch; }); };
+  lay(PLANE_L.wing[P.wing.t - 1]); lay(PLANE_L.pod[P.pod.t]); lay(PLANE_L.eng[P.eng.t - 1]);
+  lay(Object.assign({}, PLANE_L.fus)); lay(PLANE_L.gun[P.gun.t - 1]);
+  const rows = g.map(r => r.join("")), a = ARM_PAL[P.arm.t - 1];
+  const pal = { m: a[0], d: a[1], l: a[2], c: "#81d4fa", g: "#37474f", G: TIERS[P.gun.t - 1].col, p: "#607d8b", r: "#e53935", e: "#263238" };
+  PLC.key = key; PLC.game = mkSprite(rows, pal, 2); PLC.shadow = mkSprite(rows, "shadow", 2); PLC.big = mkSprite(rows, pal, 5);
+  PLC.noz = []; PLC.eng = P.eng.t;
+  rows.forEach((r, y) => [...(r + [...r].reverse().join(""))].forEach((ch, x) => { if (ch === "e") PLC.noz.push([x, y]); }));
+  return PLC;
+}
+function drawFlames(pc, x0, y0, sc, still) {
+  const f = FLAME[pc.eng - 1], len = still ? (1.2 + pc.eng * 0.6) * sc : (2 + pc.eng * 1.4) * sc * (0.75 + Math.random() * 0.5);
+  for (const [x, y] of pc.noz) {
+    const px = x0 + x * sc, py = y0 + (y + 1) * sc;
+    ctx.fillStyle = f[1]; ctx.fillRect(px, py, sc, len);
+    ctx.fillStyle = f[0]; ctx.fillRect(px + sc * 0.25, py, sc * 0.5, len * 0.6);
+  }
+}
 function magR() { return 40 + 24 * SV.up.mag; }
 function gainXP(n) {
   SV.xp += n; if (G) G.xpGot += n;
@@ -436,10 +559,10 @@ function newGame(stage) {
   BG.world = r; BG.deco = []; BG.next = 0;
   G = {
     stage, reg: r, t: 0, scroll: 46, god: false, bot: false, skill: 1,
-    p: { x: W / 2, y: H - safeB - 110, hp: maxHP(), inv: 2.2, fireT: 0.3, misT: 0, bombs: 2 + SV.up.bomb, wl: SV.wl, dead: false, wingX: [W / 2, W / 2] },
+    p: { x: W / 2, y: H - safeB - 110, hp: maxHP(), inv: 2.2, fireT: 0.3, misT: 0, podT: 0.8, bombs: 2 + SV.up.bomb, wl: SV.wl, dead: false, wingX: [W / 2, W / 2] },
     pb: [], eb: [], en: [], items: [], fx: [], texts: [],
     timeline: buildStage(stage), ti: 0, boss: null,
-    kills: 0, goldGot: 0, xpGot: 0, score: 0, hitsTaken: 0, dmgTaken: 0, bonus: 0,
+    kills: 0, goldGot: 0, scrapGot: 0, xpGot: 0, score: 0, hitsTaken: 0, dmgTaken: 0, bonus: 0,
     state: "play", endT: 0, finished: false, shake: 0, flash: 0, bombFx: 0, light: 0, stormT: 5,
     waves: {}, waveSeq: 0, maxEb: 0, bossT: 0, bossStart: 0, newBest: false,
     was100: SV.clear100, was200: SV.clear200,
@@ -457,7 +580,7 @@ function finishStage(win) {
   const g = G; if (g.finished) return; g.finished = true;
   if (win) {
     g.bonus = 20 + g.stage * 6 + (g.hitsTaken === 0 ? 50 + g.stage * 4 : 0);
-    SV.gold += g.goldGot + g.bonus; SV.cleared[g.stage] = 1;
+    SV.gold += g.goldGot + g.bonus; SV.scrap += g.scrapGot; SV.cleared[g.stage] = 1;
     SV.unlocked = Math.max(SV.unlocked, Math.min(MAXS, g.stage + 1));
     SV.wl = g.p.wl;
     if ((SV.best[g.stage] || 0) < g.score) { SV.best[g.stage] = g.score; g.newBest = true; }
@@ -466,14 +589,14 @@ function finishStage(win) {
     nextStage = Math.min(MAXS, g.stage + 1);
     go(g.stage === 200 && !g.was200 ? "ending" : g.stage === 100 && !g.was100 ? "midend" : "result");
   } else {
-    g.kept = Math.floor(g.goldGot * 0.5); SV.gold += g.kept;
+    g.kept = Math.floor(g.goldGot * 0.5); SV.gold += g.kept; SV.scrap += g.scrapGot;
     SV.wl = Math.max(1, g.p.wl - 1); nextStage = g.stage;
     go("over");
   }
   persist();
 }
 function abortStage() {
-  if (G && !G.finished) { G.finished = true; SV.gold += Math.floor(G.goldGot * 0.5); persist(); }
+  if (G && !G.finished) { G.finished = true; SV.gold += Math.floor(G.goldGot * 0.5); SV.scrap += G.scrapGot; persist(); }
   go("hangar");
 }
 function go(sc) {
@@ -529,7 +652,9 @@ function updPlayer(dt) {
   if (G.state !== "play") return;
   p.fireT -= dt;
   if (p.fireT <= 0) { p.fireT = Math.max(0, p.fireT + fireInt()); shoot(); }
-  if (p.wl >= 4) { p.misT -= dt; if (p.misT <= 0) { p.misT = p.wl >= 5 ? 0.4 : 0.6; missile(-1); missile(1); } }
+  if (p.wl >= 4) { p.misT -= dt; if (p.misT <= 0) { p.misT = p.wl >= 5 ? 0.4 : 0.6; missile(-1, 2.5, 0); missile(1, 2.5, 0); } }
+  const ps = podSpec();
+  if (ps) { p.podT -= dt; if (p.podT <= 0) { p.podT = ps.int; for (let i = 0; i < ps.n; i++) missile(i % 2 ? 1 : -1, ps.d, i >> 1); } }
 }
 function shoot() {
   const p = G.p, D = dmgBase(), V = 760;
@@ -542,12 +667,14 @@ function shoot() {
       B(-12); B(-6); B(0); B(6); B(12); B(-12, -0.12, 0.9); B(12, 0.12, 0.9);
       if (p.wl >= 5) { B(-14, -0.26, 0.8); B(14, 0.26, 0.8); }
   }
+  const wt = PT("wing").t;
+  if (wt >= 3) { const m = wt >= 5 ? 0.7 : 0.5; G.pb.push({ x: p.x - 15, y: p.y - 2, vx: 0, vy: -V, d: D * m }, { x: p.x + 15, y: p.y - 2, vx: 0, vy: -V, d: D * m }); }
   for (let i = 0; i < SV.up.wing; i++) G.pb.push({ x: p.wingX[i], y: p.y + 2, vx: 0, vy: -V, d: D * 0.7 });
   sfx("shot");
 }
-function missile(side) {
+function missile(side, mult, row) {
   const p = G.p;
-  G.pb.push({ x: p.x + side * 10, y: p.y, vx: side * 160, vy: -260, d: dmgBase() * 2.5, homing: true, mis: true });
+  G.pb.push({ x: p.x + side * (10 + row * 6), y: p.y + row * 4, vx: side * (160 + row * 50), vy: -260, d: dmgBase() * mult, homing: true, mis: true });
 }
 function steer(b, dt) {
   let best = null, bd = 1e9;
@@ -579,7 +706,7 @@ function useBomb() {
 }
 function hurt(d) {
   const p = G.p; if (p.inv > 0 || p.dead || G.state !== "play") return false;
-  d = Math.round(d); G.hitsTaken++; G.dmgTaken += d; if (!G.god) p.hp -= d;
+  d = Math.round(d * (1 - armPct() / 100)); G.hitsTaken++; G.dmgTaken += d; if (!G.god) p.hp -= d;
   p.inv = 1.0; G.shake = 0.3; G.flash = 0.18; sfx("hit"); vibrate(50);
   floatText(p.x, p.y - 22, "-" + d, "#ff5252");
   if (p.hp <= 0) {
@@ -688,6 +815,7 @@ function killEnemy(e) {
   if (heavy) { dropItem(e.x - 10, e.y, Math.random() < 0.4 ? "P" : "H"); if (Math.random() < 0.4) dropItem(e.x + 10, e.y, "H"); }
   else if (e.kind === "ace" || e.kind === "heli") { if (Math.random() < 0.4) dropItem(e.x, e.y, Math.random() < 0.7 ? "H" : "B"); }
   else if (Math.random() < 0.012) dropItem(e.x, e.y, "B");
+  if (Math.random() < (heavy ? 0.1 : e.kind === "ace" || e.kind === "heli" ? 0.06 : 0.01)) dropItem(e.x + 8, e.y, "S", 1);
 }
 
 // ======================================================================
@@ -843,6 +971,7 @@ function damageBoss(b, d) {
     gainXP((b.big ? 200 + s * 8 : 40 + s * 2) * (b.final ? 2 : 1));
     g.score += (b.big ? 50000 : 8000) + s * 500; g.kills++;
     if (b.big) { dropItem(b.x, b.y, "P"); dropItem(b.x + 16, b.y, "H"); } else if (Math.random() < 0.35) dropItem(b.x, b.y, Math.random() < 0.5 ? "P" : "H");
+    dropItem(b.x - 16, b.y, "S", b.final ? 15 : b.big ? 4 + Math.floor(s / 40) : 1 + (Math.random() < 0.5 ? 1 : 0));
     for (const it of g.items) it.mag = true;
   }
 }
@@ -857,7 +986,7 @@ function dropCoins(x, y, total, mag) {
       vx: rnd(-60, 60), vy: rnd(-130, -40), t: Math.random(), mag });
   }
 }
-function dropItem(x, y, kind) { G.items.push({ kind, x, y, vx: 0, vy: -40, t: 0 }); }
+function dropItem(x, y, kind, n) { G.items.push({ kind, x, y, vx: 0, vy: -40, t: 0, n: n || 1 }); }
 function updItems(dt) {
   const p = G.p, R = magR();
   for (const it of G.items) {
@@ -883,6 +1012,7 @@ function pick(it) {
   } else if (it.kind === "H") {
     const h = Math.round(maxHP() * 0.3); p.hp = Math.min(maxHP(), p.hp + h); floatText(p.x, p.y - 28, "HP +" + h, "#69f0ae");
   } else if (it.kind === "B") { p.bombs = Math.min(9, p.bombs + 1); floatText(p.x, p.y - 28, "BOMB +1", "#ffb74d"); }
+  else if (it.kind === "S") { G.scrapGot += it.n; floatText(p.x, p.y - 28, "부품 +" + it.n, "#b0bec5"); }
   sfx("item");
 }
 
@@ -998,7 +1128,8 @@ function btn(id, x, y, w, h, label, cb, o) {
   ctx.fillStyle = dis ? "rgba(40,44,52,0.9)" : pressed ? (o.press || "#3fbf6f") : (o.color || "#1f6f3f");
   rr(x, y, w, h, 8); ctx.fill();
   ctx.strokeStyle = dis ? "#555" : (o.border || "#9dffb8"); ctx.lineWidth = 2; ctx.stroke();
-  txt(label, x + w / 2, y + h / 2 + 1, o.size || 16, dis ? "#8a8a8a" : (o.textColor || "#ffffff"));
+  if (o.sub) { txt(o.sub, x + w / 2, y + h / 2 - 8, 10, dis ? "#777777" : "#e0e0e0"); txt(label, x + w / 2, y + h / 2 + 7, o.size || 12, dis ? "#8a8a8a" : (o.textColor || "#ffffff")); }
+  else txt(label, x + w / 2, y + h / 2 + 1, o.size || 16, dis ? "#8a8a8a" : (o.textColor || "#ffffff"));
   if (!dis || o.tapDisabled) ui.next.push({ id, x, y, w, h, cb: dis ? o.tapDisabled : cb, instant: !!o.instant });
 }
 
@@ -1018,8 +1149,9 @@ function drawGame() {
   const sp = spr(g.reg);
   for (const e of g.en) if (!e.ground) drawEnemy(e, sp);
   for (const it of g.items) drawItem(it);
-  ctx.fillStyle = "#fff59d";
-  for (const b of g.pb) if (!b.mis) ctx.fillRect(b.x - 1.5, b.y - 5, 3, 10);
+  const gt = PT("gun").t, bw = gt >= 4 ? 4 : 3;
+  ctx.fillStyle = BCOL[gt - 1];
+  for (const b of g.pb) if (!b.mis) ctx.fillRect(b.x - bw / 2, b.y - 5, bw, 10);
   for (const b of g.pb) if (b.mis) { ctx.fillStyle = "#ffffff"; ctx.fillRect(b.x - 1.5, b.y - 4, 3, 8); ctx.fillStyle = "#ff9800"; ctx.fillRect(b.x - 1, b.y + 4, 2, 4); }
   drawPlayer();
   for (const b of g.eb) { const im = b.big ? BUL.big : BUL.n; ctx.drawImage(im, b.x - im.width / 2, b.y - im.height / 2); }
@@ -1085,14 +1217,22 @@ function drawPlayer() {
   const p = G.p; if (p.dead) return;
   if (p.inv > 0 && Math.floor(p.inv * 16) % 2 === 0 && G.state === "play") return;
   for (let i = 0; i < SV.up.wing; i++) ctx.drawImage(PL.wing, p.wingX[i] - 8, p.y + 4);
-  ctx.drawImage(PL.planeS, p.x - 16 + 12, p.y - 14 + 18);
-  ctx.drawImage(PL.plane, p.x - 16, p.y - 14);
-  ctx.fillStyle = Math.floor(G.t * 30) % 2 ? "#eeeeee" : "#777777"; ctx.fillRect(p.x - 6, p.y - 15, 12, 1.5);
+  const pc = planeSprites(), im = pc.game, x0 = p.x - im.width / 2, y0 = p.y - im.height / 2;
+  ctx.drawImage(pc.shadow, x0 + 12, y0 + 16);
+  drawFlames(pc, x0, y0, 2, false);
+  ctx.drawImage(im, x0, y0);
   ctx.fillStyle = "#ffffff"; circle(p.x, p.y + 1, 2.2);
   ctx.strokeStyle = "#d32f2f"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y + 1, 3, 0, Math.PI * 2); ctx.stroke();
 }
 function drawItem(it) {
   if (it.kind === "coin") { ctx.drawImage(COINF[Math.floor(it.t * 12) % 6], it.x - 8, it.y - 8); return; }
+  if (it.kind === "S") {
+    ctx.fillStyle = "#111111"; ctx.fillRect(it.x - 11, it.y - 11, 22, 22);
+    ctx.fillStyle = Math.floor(it.t * 6) % 2 ? "#cfd8dc" : "#90a4ae";
+    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4 + it.t * 2; ctx.fillRect(it.x + Math.cos(a) * 7 - 2, it.y + Math.sin(a) * 7 - 2, 4, 4); }
+    circle(it.x, it.y, 6); ctx.fillStyle = "#263238"; circle(it.x, it.y, 2.5);
+    return;
+  }
   const col = { P: ["#e53935", "#ff8a80"], H: ["#2e7d32", "#69f0ae"], B: ["#ef6c00", "#ffcc80"] }[it.kind];
   ctx.fillStyle = "#111111"; ctx.fillRect(it.x - 11, it.y - 11, 22, 22);
   ctx.fillStyle = col[Math.floor(it.t * 6) % 2]; ctx.fillRect(it.x - 9, it.y - 9, 18, 18);
@@ -1277,7 +1417,8 @@ function drawTitle() {
   drawBgBase(); drawClouds();
   const small = H < 640, top = safeT + (small ? 18 : Math.max(30, H * 0.07)), gap = small ? 50 : 56;
   const px = ((uiT * 70) % (W + 120)) - 60;
-  ctx.drawImage(PL.planeS, px + 12, top + 146); ctx.drawImage(PL.plane, px - 16, top + 128 + Math.sin(uiT * 3) * 4);
+  const pc = planeSprites(), py = top + 126 + Math.sin(uiT * 3) * 4;
+  ctx.drawImage(pc.shadow, px - 6, top + 146); drawFlames(pc, px - 18, py, 2, false); ctx.drawImage(pc.game, px - 18, py);
   txt("SKY ACE", W / 2, top + 28, 44, "#ffffff", "center", true, MONO);
   txt("200", W / 2, top + 80, 54, "#ffd54f", "center", true, MONO);
   txt("1942 레트로 슈팅 · 200 스테이지", W / 2, top + 118, 14, "#e3f2fd");
@@ -1290,7 +1431,7 @@ function drawTitle() {
   btn("saver", 68 + (W - 128) / 2, y, (W - 128) / 2, gap - 10, "절전 " + (SV.saver ? "켜짐" : "꺼짐"), toggleSaver, { size: 14, color: SV.saver ? "#1b5e20" : "#263238" }); y += gap + 4;
   const n = Object.keys(SV.cleared).length;
   txt("조종사 Lv " + SV.lvl + " · " + fmt(SV.gold) + "G · 클리어 " + n + "/" + MAXS, W / 2, y, 13, "#ffffff");
-  txt(SV.saver ? "절전 모드: 30fps · 저해상도 · 효과 절약" : "일반 모드: 60fps · 고해상도", W / 2, y + 20, 11, "#b3e5fc", "center", false);
+  txt(SV.saver ? "절전 모드: 해상도·효과 절약 (게임은 60fps)" : "일반 모드: 고해상도", W / 2, y + 20, 11, "#b3e5fc", "center", false);
   btn("reset", W / 2 - 70, H - safeB - 42, 140, 30, resetArm > uiT ? "한 번 더 누르면 초기화" : "기록 초기화",
     () => { if (resetArm > uiT) { SV = freshSave(); persist(); resetArm = 0; toast = { s: "기록을 초기화했습니다", t: 2 }; } else resetArm = uiT + 3; },
     { size: 11, color: "rgba(0,0,0,0.45)", border: "rgba(255,255,255,0.35)" });
@@ -1307,11 +1448,12 @@ function drawHelp() {
   sec("조작", ["화면 아무 곳이나 손가락을 대고 끌면 비행기가 같은 방향으로 움직입니다. 손가락이 비행기를 가리지 않습니다.",
     "총은 자동으로 쏩니다. 오른쪽 아래 BOMB은 적 총알을 모두 지우고 큰 피해를 줍니다.", "키보드: 방향키·WASD 이동, 스페이스·X 폭탄, P 일시정지"]);
   sec("성장 (RPG)", ["적을 잡으면 경험치가 쌓이고, 레벨(최대 150)이 오르면 공격력과 체력이 올라갑니다.",
-    "코인으로 격납고에서 6가지를 강화합니다. 공격력·장갑은 40단계까지 있습니다.", "P 무기 단계 업(최대 5) · + 체력 회복 · B 폭탄 추가",
+    "격납고에서 주포·엔진·날개·장갑·미사일 파츠를 장착합니다. 레벨이 되면 골드와 부품으로 Mk1~Mk5 등급을 제작하고, 등급마다 +10까지 강화합니다. 등급이 오르면 기체 모양도 바뀝니다.",
+    "부품(톱니 상자)은 보스와 큰 적이 떨어뜨립니다.", "P 무기 단계 업(최대 5) · + 체력 회복 · B 폭탄 추가",
     "격추돼도 경험치와 골드 절반은 남습니다."]);
   sec("200 스테이지", ["10개 지역 × 20판. 매 판 끝에 보스가 나옵니다.", "10판마다 대형 보스, 다시 나올 때마다 Mk-II·Mk-III로 강해집니다.",
     "100판과 200판은 최종 보스입니다.", "비행기 가운데 흰 점이 피격 판정입니다."]);
-  sec("절전 모드", ["켜면 화면을 1초에 30번만 그리고, 해상도와 폭발 효과를 줄여 배터리를 아낍니다. 메뉴 화면은 멈춰 있을 때 그리기를 쉽니다."]);
+  sec("절전 모드", ["켜면 해상도와 폭발 효과를 줄여 배터리를 아낍니다. 게임 화면은 항상 60fps입니다. 메뉴는 멈춰 있을 때 그리기를 쉽니다."]);
   btn("hback", 60, H - safeB - 60, W - 120, 44, "◀ 돌아가기", () => go("title"));
 }
 function drawSelect() {
@@ -1339,38 +1481,73 @@ function drawSelect() {
   txt("★ " + (first + 19) + "판 · " + b2.name, 26, y + 44, 12, b2.def.final ? "#ff5252" : "#ff8a80", "left");
   btn("sback", 60, H - safeB - 58, W - 120, 44, "◀ 돌아가기", () => go("title"));
 }
+let hTab = "parts";
 function drawHangar() {
-  drawBgBase(); dim(0.5);
-  let y = safeT + 14;
-  txt("격납고", W / 2, y + 12, 21, "#ffffff");
+  drawBgBase(); dim(0.55);
+  let y = safeT + 12;
+  txt("격납고", W / 2, y + 12, 20, "#ffffff");
   btn("hgback", 10, y - 1, 64, 30, "◀ 타이틀", () => go("title"), { size: 12, color: "#263238" });
-  y += 36;
-  panel(10, y, W - 20, 64);
-  txt("조종사 Lv " + SV.lvl, 22, y + 17, 16, "#7cff9b", "left");
-  bar(22, y + 33, 140, 6, SV.lvl >= LVMAX ? 1 : SV.xp / xpNeed(SV.lvl), "#7cff9b");
-  txt(SV.lvl >= LVMAX ? "MAX" : fmt(SV.xp) + " / " + fmt(xpNeed(SV.lvl)) + " XP", 22, y + 51, 10, "#b0bec5", "left", false, MONO);
-  txt("보유 골드", W - 22, y + 17, 12, "#cfd8dc", "right");
-  txt(fmt(SV.gold) + " G", W - 22, y + 42, 21, "#ffd54f", "right", true, MONO);
-  y += 72;
+  y += 34;
+  const pvH = clamp(H - 600, 112, 180);
+  panel(10, y, W - 20, pvH);
+  const pc = planeSprites(), im = pc.big, sc = Math.min(1.3, (pvH - 28) / im.height), iw = im.width * sc, ih = im.height * sc;
+  const cx = 74, cy = y + pvH / 2 - 6;
+  ctx.fillStyle = "rgba(124,255,155,0.08)"; circle(cx, cy, pvH / 2 - 8);
+  drawFlames(pc, cx - iw / 2, cy - ih / 2, 5 * sc, true); ctx.drawImage(im, cx - iw / 2, cy - ih / 2, iw, ih);
+  const tx = 146; let ty = y + Math.max(18, pvH / 2 - 44);
+  txt("조종사 Lv " + SV.lvl, tx, ty, 14, "#7cff9b", "left"); ty += 15;
+  bar(tx, ty, W - tx - 22, 4, SV.lvl >= LVMAX ? 1 : SV.xp / xpNeed(SV.lvl), "#7cff9b"); ty += 16;
+  txt(fmt(SV.gold) + " G", tx, ty, 15, "#ffd54f", "left", true, MONO); txt("부품 " + SV.scrap, W - 22, ty, 12, "#cfd8dc", "right"); ty += 21;
+  txt("전투력 " + fmt(power()), tx, ty, 14, "#ff8a80", "left"); ty += 18;
+  txt("공격 " + fmt(dmgBase()) + " · 체력 " + fmt(maxHP()) + " · 방어 " + armPct().toFixed(0) + "%", tx, ty, 10.5, "#e3f2fd", "left", false);
+  y += pvH + 6;
   const bi = bossInfo(nextStage);
-  txt("공격 " + fmt(dmgBase()) + " · 체력 " + fmt(maxHP()) + " · 무기 " + "★".repeat(SV.wl) + "☆".repeat(5 - SV.wl), W / 2, y + 7, 12, "#ffccbc");
-  txt("다음: " + REGIONS[regionIdx(nextStage)].name + " · 보스 " + bi.name, W / 2, y + 25, 11, bi.def.final ? "#ff5252" : "#b3e5fc");
-  y += 38;
-  const rowH = clamp((H - safeB - 78 - y) / UPS.length, 44, 62);
-  for (const u of UPS) {
-    const lv = SV.up[u.k], full = lv >= u.max, cost = upCost(u), h = rowH - 6, cy = y + h / 2;
-    panel(10, y, W - 20, h);
-    txt(u.name, 22, cy - 9, 15, "#ffffff", "left");
-    txt(lv + "/" + u.max, 104, cy - 9, 11, "#7cff9b", "left", true, MONO);
-    bar(150, cy - 11, 86, 4, lv / u.max, "#7cff9b");
-    txt(u.desc, 22, cy + 10, 11, "#b0bec5", "left", false);
-    btn("up_" + u.k, W - 104, cy - 16, 86, 32, full ? "MAX" : fmt(cost) + "G",
-      () => { if (buyUp(u)) { sfx("lvl"); toast = { s: u.name + " 강화 완료 (" + SV.up[u.k] + "/" + u.max + ")", t: 1.6 }; } },
-      { disabled: full || SV.gold < cost, size: 13, color: "#8d6e00", border: "#ffe082", press: "#c79a00",
-        tapDisabled: full ? null : () => { toast = { s: "골드가 " + fmt(cost - SV.gold) + "G 부족합니다", t: 1.6 }; } });
-    y += rowH;
+  txt("STAGE " + nextStage + " · " + REGIONS[regionIdx(nextStage)].name + " · 보스 " + bi.name, W / 2, y + 7, 11, bi.def.final ? "#ff5252" : "#b3e5fc");
+  y += 18;
+  const tw = (W - 28) / 2;
+  btn("tabp", 10, y, tw, 30, "기체 파츠", () => { hTab = "parts"; }, { size: 13, color: hTab === "parts" ? "#1f6f3f" : "#263238", border: hTab === "parts" ? "#9dffb8" : "#607d8b" });
+  btn("tabs", 18 + tw, y, tw, 30, "지원 장비", () => { hTab = "sup"; }, { size: 13, color: hTab === "sup" ? "#1f6f3f" : "#263238", border: hTab === "sup" ? "#9dffb8" : "#607d8b" });
+  y += 36;
+  const bottom = H - safeB - 70;
+  if (hTab === "parts") {
+    const rowH = clamp((bottom - y) / SLOTS.length, 46, 64);
+    for (const sl of SLOTS) {
+      const p = PT(sl.k), h = rowH - 5, cyy = y + h / 2, tier = p.t ? TIERS[p.t - 1] : null;
+      panel(10, y, W - 20, h);
+      txt(sl.name + (tier ? "  " + tier.n : ""), 20, cyy - 13, 10.5, "#90a4ae", "left");
+      txt(p.t ? sl.names[p.t - 1] + " +" + p.k : "비어 있음", 20, cyy + 1, 13, tier ? tier.col : "#78909c", "left");
+      txt(p.t && p.k < ENH_MAX ? slotEffect(sl.k, p) + " → " + slotEffect(sl.k, { t: p.t, k: p.k + 1 }).replace(/^[^0-9×+\-]*/, "").split("·기")[0] : slotEffect(sl.k, p), 20, cyy + 15, 9.5, "#b0bec5", "left", false);
+      const ec = enhCost(sl.k), canE = p.t && p.k < ENH_MAX;
+      btn("en_" + sl.k, W - 160, cyy - 18, 70, 36, !p.t ? "-" : canE ? fmt(ec) + "G" : "MAX",
+        () => { if (enhance(sl.k)) { sfx("lvl"); toast = { s: sl.name + " 강화 +" + p.k, t: 1.4 }; } },
+        { sub: "강화", disabled: !canE || SV.gold < ec, color: "#8d6e00", border: "#ffe082", press: "#c79a00",
+          tapDisabled: !canE ? () => { toast = { s: p.t ? "최대 강화입니다. 다음 등급을 제작하세요" : "먼저 제작해야 합니다", t: 1.8 }; } : () => { toast = { s: "골드가 " + fmt(ec - SV.gold) + "G 부족합니다", t: 1.6 }; } });
+      const nt = nextTier(sl.k), ok = nt && SV.lvl >= nt.lv && SV.gold >= nt.gold && SV.scrap >= nt.parts;
+      btn("cr_" + sl.k, W - 86, cyy - 18, 70, 36, !nt ? "최고" : SV.lvl < nt.lv ? "Lv" + nt.lv : fmt(nt.gold) + "G",
+        () => { if (craft(sl.k)) { sfx("clear"); toast = { s: sl.name + " " + TIERS[PT(sl.k).t - 1].n + " 장착! 기체 모양이 바뀌었습니다", t: 2.2 }; } },
+        { sub: nt ? nt.n + " 제작" : "등급", disabled: !ok, color: "#4a148c", border: nt ? nt.col : "#555", press: "#7b1fa2",
+          tapDisabled: nt ? () => {
+            const lack = []; if (SV.lvl < nt.lv) lack.push("레벨 " + nt.lv); if (SV.gold < nt.gold) lack.push("골드 " + fmt(nt.gold - SV.gold)); if (SV.scrap < nt.parts) lack.push("부품 " + (nt.parts - SV.scrap) + "개");
+            toast = { s: nt.n + " 제작: Lv" + nt.lv + " · " + fmt(nt.gold) + "G · 부품 " + nt.parts + " (부족: " + lack.join(", ") + ")", t: 2.6 };
+          } : null });
+      y += rowH;
+    }
+  } else {
+    const rowH = clamp((bottom - y) / UPS.length, 46, 70);
+    for (const u of UPS) {
+      const lv = SV.up[u.k], full = lv >= u.max, cost = upCost(u), h = rowH - 6, cy2 = y + h / 2;
+      panel(10, y, W - 20, h);
+      txt(u.name, 22, cy2 - 9, 15, "#ffffff", "left");
+      txt(lv + "/" + u.max, 110, cy2 - 9, 11, "#7cff9b", "left", true, MONO);
+      txt(u.desc, 22, cy2 + 10, 11, "#b0bec5", "left", false);
+      btn("up_" + u.k, W - 104, cy2 - 16, 86, 32, full ? "MAX" : fmt(cost) + "G",
+        () => { if (buyUp(u)) { sfx("lvl"); toast = { s: u.name + " 강화 완료 (" + SV.up[u.k] + "/" + u.max + ")", t: 1.6 }; } },
+        { disabled: full || SV.gold < cost, size: 13, color: "#8d6e00", border: "#ffe082", press: "#c79a00",
+          tapDisabled: full ? null : () => { toast = { s: "골드가 " + fmt(cost - SV.gold) + "G 부족합니다", t: 1.6 }; } });
+      y += rowH;
+    }
   }
-  const by = H - safeB - 64;
+  const by = H - safeB - 62;
   btn("hsel", 10, by, 104, 50, "스테이지", () => go("select"), { size: 14, color: "#263238" });
   btn("go", 122, by, W - 132, 50, "STAGE " + nextStage + " 출격 ▶", () => startStage(nextStage),
     { size: 17, color: "#c62828", border: "#ffcdd2", press: "#e53935" });
@@ -1389,7 +1566,7 @@ function drawPause() {
 function drawResult() {
   const g = G; dim(0.55);
   const top = Math.max(safeT + 20, H * 0.12), x = 24;
-  panel(16, top, W - 32, 330);
+  panel(16, top, W - 32, 352);
   txt("STAGE " + g.stage + " CLEAR!", W / 2, top + 32, 25, "#ffd54f", "center", true, MONO);
   let y = top + 72;
   const row = (a, b, c) => { txt(a, x + 14, y, 14, "#e3f2fd", "left"); txt(b, W - x - 14, y, 15, c || "#ffffff", "right", true, MONO); y += 28; };
@@ -1397,10 +1574,11 @@ function drawResult() {
   row("획득 골드", "+" + fmt(g.goldGot) + " G", "#ffd54f");
   row(g.hitsTaken === 0 ? "클리어 보너스 (무피격!)" : "클리어 보너스", "+" + fmt(g.bonus) + " G", "#ffd54f");
   row("경험치", "+" + fmt(g.xpGot) + " XP", "#7cff9b");
+  row("부품", "+" + g.scrapGot + " 개 (보유 " + SV.scrap + ")", "#cfd8dc");
   row("점수", fmt(g.score) + (g.newBest ? " ★" : ""), g.newBest ? "#ff8a80" : "#ffffff");
   row("조종사 레벨", "Lv " + SV.lvl, "#7cff9b");
   row("보유 골드", fmt(SV.gold) + " G", "#ffd54f");
-  y = top + 330 + 14;
+  y = top + 352 + 12;
   const ns = Math.min(MAXS, g.stage + 1);
   btn("rhangar", 30, y, W - 60, 48, "격납고에서 강화 → STAGE " + ns, () => { nextStage = ns; go("hangar"); }, { size: 16 }); y += 56;
   btn("rnext", 30, y, W - 60, 46, "바로 다음 스테이지 ▶", () => startStage(ns), { size: 15, color: "#c62828", border: "#ffcdd2" }); y += 54;
@@ -1415,7 +1593,7 @@ function drawOver() {
   let y = top + 98;
   txt("골드 절반 보존  +" + fmt(g.kept) + " G", W / 2, y, 15, "#ffd54f"); y += 26;
   txt("경험치 유지  Lv " + SV.lvl, W / 2, y, 15, "#7cff9b"); y += 26;
-  txt("무기 단계 " + SV.wl + "/5", W / 2, y, 13, "#ff8a80"); y += 30;
+  txt("부품 보존 +" + g.scrapGot + " · 무기 단계 " + SV.wl + "/5", W / 2, y, 13, "#cfd8dc"); y += 30;
   wrap("TIP · " + TIPS[g.stage % TIPS.length], 34, y, W - 68, 18, 12, "#e3f2fd");
   y = top + 264;
   btn("oretry", 30, y, W - 60, 50, "다시 도전 ▶", () => startStage(g.stage), { size: 18, color: "#c62828", border: "#ffcdd2" }); y += 60;
@@ -1427,7 +1605,7 @@ function drawEnding(mid) {
   let y = safeT + Math.max(40, H * 0.1);
   txt(mid ? "STAGE 100 CLEAR!" : "ALL CLEAR!", W / 2, y, mid ? 28 : 34, "#ffd54f", "center", true, MONO); y += 46;
   txt(mid ? "첫 번째 최종 보스를 쓰러뜨렸습니다" : "200개 스테이지를 모두 돌파했습니다", W / 2, y, 16, "#ffffff"); y += 40;
-  ctx.drawImage(PL.plane, W / 2 - 16, y + Math.sin(uiT * 3) * 4); y += 60;
+  { const pc = planeSprites(), yy = y + Math.sin(uiT * 3) * 4; drawFlames(pc, W / 2 - 18, yy, 2, false); ctx.drawImage(pc.game, W / 2 - 18, yy); } y += 60;
   const lines = mid
     ? ["천공 요새 아틀라스가 구름 아래로 가라앉습니다.", "하지만 폭풍 너머, 더 깊은 하늘에서", "검은 날개의 그림자가 움직이기 시작했습니다.", "", "남은 100판 — 진짜 끝은 200판에 있습니다.", "", "조종사 Lv " + SV.lvl + " · 보유 " + fmt(SV.gold) + "G"]
     : ["흑룡 네메시스 Ω가 성층권 아래로 떨어지고,", "하늘에 다시 아침 해가 떴습니다.", "", "당신은 이제 진짜 SKY ACE입니다.", "", "조종사 Lv " + SV.lvl + " · 보유 " + fmt(SV.gold) + "G", "모든 스테이지를 다시 도전할 수 있습니다."];
@@ -1466,11 +1644,11 @@ function draw() {
 }
 // 장면별 목표 화면 갱신 횟수 (0 = 바뀔 때만 그림)
 function targetFps() {
-  if (scene === "play") return SV.saver ? 30 : 60;
+  if (scene === "play") return 60;
   if (scene === "title" || scene === "ending" || scene === "midend") return SV.saver ? 12 : 24;
   return toast ? 15 : 0;
 }
-let last = 0, acc = 0, scheduled = false;
+let last = 0, acc = 0, scheduled = false, lastDraw = 0;
 function wake() { dirty = true; schedule(); }
 function schedule() {
   if (scheduled || document.hidden) return;
@@ -1484,13 +1662,13 @@ function tick(now) {
   const t0 = performance.now();
   let dt = last ? (now - last) / 1000 : STEP; last = now;
   if (dt > 0.25) dt = 0.25;
-  if (!FREEZE) {
-    acc += dt; let n = 0;
-    while (acc >= STEP && n < 10) { update(STEP); acc -= STEP; n++; }
-    if (n >= 10) acc = 0;
-  }
   const fps = targetFps();
-  if (fps > 0 || dirty) { draw(); dirty = false; PERF.frames++; }
+  acc += dt;
+  // 120Hz 화면에서도 1초에 60번까지만 그린다
+  if (fps >= 60 && lastDraw && now - lastDraw < 14 && !dirty) { schedule(); return; }
+  if (!FREEZE) { while (acc > 0.0005) { const st = Math.min(acc, 1 / 30); update(st); acc -= st; } }
+  acc = 0;
+  if (fps > 0 || dirty) { draw(); dirty = false; PERF.frames++; lastDraw = now; }
   PERF.js += performance.now() - t0;
   if (fps > 0) schedule(); else { last = 0; acc = 0; }
 }
@@ -1561,16 +1739,22 @@ window.__T = {
       wl: G.p.wl, bossT: G.bossT ? +G.bossT.toFixed(1) : null, maxEb: G.maxEb, timeout: !G.finished };
   },
   shop() {
-    for (;;) {
-      const c = UPS.filter(u => SV.up[u.k] < u.max && upCost(u) <= SV.gold).sort((a, b) => upCost(a) - upCost(b))[0];
-      if (!c) break; buyUp(c);
+    for (let guard = 0; guard < 400; guard++) {
+      const want = SLOTS.map(sl => ({ k: sl.k, n: nextTier(sl.k) })).filter(o => o.n && SV.lvl >= o.n.lv && SV.scrap >= o.n.parts).sort((a, b) => a.n.gold - b.n.gold)[0];
+      if (want) { if (craft(want.k)) continue; }
+      const opts = [];
+      for (const sl of SLOTS) { const p = PT(sl.k); if (p.t && p.k < ENH_MAX) opts.push({ c: enhCost(sl.k), f: () => enhance(sl.k) }); }
+      for (const u of UPS) if (SV.up[u.k] < u.max) opts.push({ c: upCost(u), f: () => buyUp(u) });
+      const budget = SV.gold - (want ? want.n.gold : 0);
+      const o = opts.filter(o => o.c <= budget).sort((a, b) => a.c - b.c)[0];
+      if (!o) break; o.f();
     }
   },
   campaign(o) {
     o = o || {}; TEST = true; SV = freshSave();
     const out = []; let s = o.from || 1, tries = 0, total = 0; const to = o.to || MAXS;
     while (s <= to && total < (o.maxRuns || 900)) {
-      const r = this.run(s, o); r.try = ++tries; total++; this.shop(); r.ups = Object.values(SV.up).reduce((a, b) => a + b, 0); out.push(r);
+      const r = this.run(s, o); r.try = ++tries; total++; this.shop(); r.ups = SLOTS.map(sl => PT(sl.k).t + "." + PT(sl.k).k).join(" "); r.scrap = SV.scrap; out.push(r);
       if (r.cleared) { s++; tries = 0; } else if (tries >= (o.maxTries || 10)) break;
     }
     return { reached: s, runs: total, lvl: SV.lvl, gold: SV.gold, up: Object.assign({}, SV.up), wl: SV.wl, out };
@@ -1581,10 +1765,10 @@ window.__T = {
     if (o.bossAt !== undefined && G.boss) G.boss.hp = G.boss.maxhp * o.bossAt;
     G.bot = !!o.keepBot; TEST = false; FREEZE = !!o.freeze; wake(); return { scene, boss: G.boss && G.boss.name, eb: G.eb.length, en: G.en.length };
   },
-  setSave(p) { SV = Object.assign(freshSave(), p); },
+  setSave(p) { SV = Object.assign(freshSave(), p); PLC.key = ""; },
   scene(s) { go(s); },
   btnAt(id) { const b = ui.btns.find(b => b.id === id); return b ? [(b.x + b.w / 2) * S + offX, (b.y + b.h / 2) * S + offY] : null; },
-  state() { return { scene, stage: G && G.stage, px: G && Math.round(G.p.x), py: G && Math.round(G.p.y), bombs: G && G.p.bombs, gold: SV.gold, up: SV.up.atk, H, S: +S.toFixed(3), dpr, saver: SV.saver }; },
+  state() { return { scene, stage: G && G.stage, px: G && Math.round(G.p.x), py: G && Math.round(G.p.y), bombs: G && G.p.bombs, gold: SV.gold, parts: JSON.stringify(SV.parts), scrap: SV.scrap, H, S: +S.toFixed(3), dpr, saver: SV.saver }; },
   perf() { const r = { frames: PERF.frames, js: +PERF.js.toFixed(1), px: cv.width * cv.height }; PERF.frames = 0; PERF.js = 0; return r; },
   bosses() { const o = []; for (let s = 1; s <= MAXS; s++) o.push(s + ":" + bossInfo(s).name); return o; },
 };
@@ -1607,6 +1791,7 @@ resize();
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", () => setTimeout(resize, 250));
 nextStage = SV.clear200 ? MAXS : SV.unlocked;
+if (SV.refund) { toast = { s: "강화가 파츠 시스템으로 바뀌어 " + fmt(SV.refund) + "G를 돌려드렸습니다", t: 4 }; delete SV.refund; persist(); }
 wake();
 </script>
 <script>if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js");</script>
