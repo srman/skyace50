@@ -1797,6 +1797,9 @@ function resize() {
 resize();
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", () => setTimeout(resize, 250));
+// 아이폰 홈 화면 앱은 실행 직후 화면 크기를 늦게 알려 주는 경우가 있어 몇 번 더 맞춘다
+[150, 600, 1500].forEach(ms => setTimeout(resize, ms));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) setTimeout(resize, 200); });
 nextStage = SV.clear200 ? MAXS : SV.unlocked;
 if (SV.refund) { toast = { s: "강화가 파츠 시스템으로 바뀌어 " + fmt(SV.refund) + "G를 돌려드렸습니다", t: 4 }; delete SV.refund; persist(); }
 wake();
