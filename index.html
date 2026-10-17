@@ -34,7 +34,7 @@ document.getElementById("nojs").remove();
 // ======================================================================
 // 기본 설정
 // ======================================================================
-const W = 360, STEP = 1 / 60, MAXS = 200, LVMAX = 150;
+const W = 360, STEP = 1 / 60, MAXS = 200, LVMAX = 150, VERSION = "2026.10.17-6";
 const FONT = '-apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
 const MONO = 'Menlo, Consolas, "Courier New", monospace';
 const cv = document.getElementById("c"), mainCtx = cv.getContext("2d", { alpha: false });
@@ -87,6 +87,39 @@ function loadSave() {
 }
 let SV = loadSave();
 function persist() { if (TEST) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(SV)); } catch (e) {} }
+// 기록 백업 코드: 아이콘을 지우면 기록도 지워지므로, 코드로 옮길 수 있게 한다
+function saveCode(sv) {
+  const j = JSON.stringify(sv || SV);
+  let h = 0; for (let i = 0; i < j.length; i++) h = (h * 31 + j.charCodeAt(i)) >>> 0;
+  return "SKY1-" + btoa(unescape(encodeURIComponent(j))) + "-" + (h % 9973);
+}
+function readCode(code) {
+  const m = String(code || "").replace(/\s+/g, "").match(/^SKY1-([A-Za-z0-9+/=]+)-(\d+)$/);
+  if (!m) return null;
+  try {
+    const j = decodeURIComponent(escape(atob(m[1])));
+    let h = 0; for (let i = 0; i < j.length; i++) h = (h * 31 + j.charCodeAt(i)) >>> 0;
+    if (h % 9973 !== +m[2]) return null;
+    const d = JSON.parse(j); if (!d || d.v !== 1) return null;
+    const s = Object.assign(freshSave(), d, { up: Object.assign(freshSave().up, d.up || {}) });
+    s.parts = Object.assign(freshParts(), d.parts || {});
+    return s;
+  } catch (e) { return null; }
+}
+function backupSave() {
+  const code = saveCode();
+  const done = () => { toast = { s: "백업 코드를 복사했습니다. 메모 앱에 붙여 두세요", t: 3 }; wake(); };
+  const manual = () => { window.prompt("아래 백업 코드를 길게 눌러 복사해 두세요", code); toast = { s: "백업 코드를 메모 앱에 저장해 두세요", t: 3 }; wake(); };
+  try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done, manual); else manual(); } catch (e) { manual(); }
+}
+function restoreSave() {
+  const code = window.prompt("백업 코드를 붙여 넣으세요 (지금 기록은 덮어씁니다)", "");
+  if (!code) return;
+  const s = readCode(code);
+  if (!s) { toast = { s: "코드가 올바르지 않습니다. 처음부터 끝까지 그대로 붙여 넣어 주세요", t: 3 }; wake(); return; }
+  SV = s; PLC.key = ""; hud.key = ""; persist(); nextStage = SV.unlocked;
+  toast = { s: "복원 완료: Lv " + SV.lvl + " · STAGE " + SV.unlocked + " · " + fmt(SV.gold) + "G", t: 3.5 }; wake();
+}
 function upCost(u) { return Math.round(u.base * Math.pow(1 + SV.up[u.k], u.ex) / 10) * 10; }
 function buyUp(u) {
   if (SV.up[u.k] >= u.max) return false;
@@ -1434,7 +1467,11 @@ function drawTitle() {
   const n = Object.keys(SV.cleared).length;
   txt("조종사 Lv " + SV.lvl + " · " + fmt(SV.gold) + "G · 클리어 " + n + "/" + MAXS, W / 2, y, 13, "#ffffff");
   txt(SV.saver ? "절전 모드: 해상도·효과 절약 (게임은 60fps)" : "일반 모드: 고해상도", W / 2, y + 20, 11, "#b3e5fc", "center", false);
-  btn("reset", W / 2 - 70, H - safeB - 42, 140, 30, resetArm > uiT ? "한 번 더 누르면 초기화" : "기록 초기화",
+  const ry = H - safeB - 42, rw = (W - 40) / 3;
+  btn("backup", 10, ry, rw, 30, "기록 백업", backupSave, { size: 11, color: "rgba(13,71,161,0.75)", border: "rgba(187,222,251,0.6)" });
+  btn("restore", 20 + rw, ry, rw, 30, "기록 복원", restoreSave, { size: 11, color: "rgba(13,71,161,0.75)", border: "rgba(187,222,251,0.6)" });
+  txt("v" + VERSION, W / 2, ry - 12, 9, "rgba(255,255,255,0.55)", "center", false, MONO);
+  btn("reset", 30 + rw * 2, ry, rw, 30, resetArm > uiT ? "한번 더 누르기" : "기록 초기화",
     () => { if (resetArm > uiT) { SV = freshSave(); persist(); resetArm = 0; toast = { s: "기록을 초기화했습니다", t: 2 }; } else resetArm = uiT + 3; },
     { size: 11, color: "rgba(0,0,0,0.45)", border: "rgba(255,255,255,0.35)" });
 }
