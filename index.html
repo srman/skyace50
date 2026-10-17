@@ -8,7 +8,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="format-detection" content="telephone=no">
-<title>SKY ACE 50</title>
+<title>SKY ACE 200</title>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none;
     touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
@@ -21,10 +21,10 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
-<meta name="apple-mobile-web-app-title" content="SKY ACE 50">
+<meta name="apple-mobile-web-app-title" content="SKY ACE 200">
 </head>
 <body>
-<div id="nojs">SKY ACE 50을 불러오는 중입니다…<br>이 문구가 계속 보이면 미리보기 화면입니다.<br>Safari나 Chrome으로 열어 주세요.</div>
+<div id="nojs">SKY ACE 200을 불러오는 중입니다…<br>이 문구가 계속 보이면 미리보기 화면입니다.<br>Safari나 Chrome으로 열어 주세요.</div>
 <canvas id="c"></canvas>
 <div id="sa"></div>
 <script>
@@ -34,12 +34,13 @@ document.getElementById("nojs").remove();
 // ======================================================================
 // 기본 설정
 // ======================================================================
-const W = 360, STEP = 1 / 60;
+const W = 360, STEP = 1 / 60, MAXS = 200, LVMAX = 150;
 const FONT = '-apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
 const MONO = 'Menlo, Consolas, "Courier New", monospace';
-const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const cv = document.getElementById("c"), mainCtx = cv.getContext("2d", { alpha: false });
+let ctx = mainCtx;
 let H = 640, S = 1, offX = 0, offY = 0, dpr = 1, safeT = 0, safeB = 0;
-let scene = "title", G = null, uiT = 0, TEST = false, FREEZE = false, nextStage = 1, resetArm = 0, toast = null;
+let scene = "title", G = null, uiT = 0, TEST = false, FREEZE = false, nextStage = 1, resetArm = 0, toast = null, selRegion = 0, dirty = true;
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const rnd = (a, b) => a + Math.random() * (b - a);
@@ -50,22 +51,24 @@ function rng(seed) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 function hash(i, j) { const h = Math.sin(i * 127.1 + j * 311.7) * 43758.5453; return h - Math.floor(h); }
+// 배열을 새로 만들지 않고 걸러 낸다 (쓰레기 수집을 줄여 배터리를 아낀다)
+function compact(a, keep) { let j = 0; for (let i = 0; i < a.length; i++) { const v = a[i]; if (keep(v)) a[j++] = v; } a.length = j; }
 
 // ======================================================================
 // 저장 · 성장
 // ======================================================================
 const SAVE_KEY = "skyace50_v1";
 const UPS = [
-  { k: "atk", name: "공격력", desc: "모든 총알 피해 +15%", base: 100, max: 10 },
-  { k: "rate", name: "연사 속도", desc: "발사 간격 7% 단축", base: 90, max: 10 },
-  { k: "hp", name: "장갑", desc: "최대 체력 +25", base: 70, max: 10 },
-  { k: "mag", name: "자석", desc: "코인을 끌어오는 범위 증가", base: 50, max: 5 },
-  { k: "bomb", name: "폭탄 탑재", desc: "출격할 때 폭탄 +1", base: 150, max: 4 },
-  { k: "wing", name: "호위기", desc: "함께 싸우는 보조기 (최대 2대)", base: 600, max: 2 },
+  { k: "atk", name: "공격력", desc: "모든 총알 피해 +15%", base: 60, max: 40, ex: 1.6 },
+  { k: "rate", name: "연사 속도", desc: "발사 간격 7% 단축", base: 90, max: 10, ex: 2.0 },
+  { k: "hp", name: "장갑", desc: "최대 체력 +25", base: 50, max: 40, ex: 1.6 },
+  { k: "mag", name: "자석", desc: "코인을 끌어오는 범위 증가", base: 50, max: 5, ex: 2.0 },
+  { k: "bomb", name: "폭탄 탑재", desc: "출격할 때 폭탄 +1", base: 150, max: 4, ex: 2.0 },
+  { k: "wing", name: "호위기", desc: "함께 싸우는 보조기 (최대 2대)", base: 600, max: 2, ex: 2.0 },
 ];
 function freshSave() {
-  return { v: 1, unlocked: 1, gold: 0, xp: 0, lvl: 1, wl: 1, sound: true,
-    up: { atk: 0, rate: 0, hp: 0, mag: 0, bomb: 0, wing: 0 }, best: {}, cleared: {}, allClear: false };
+  return { v: 1, unlocked: 1, gold: 0, xp: 0, lvl: 1, wl: 1, sound: true, saver: true,
+    up: { atk: 0, rate: 0, hp: 0, mag: 0, bomb: 0, wing: 0 }, best: {}, cleared: {}, clear100: false, clear200: false };
 }
 function loadSave() {
   try {
@@ -76,7 +79,7 @@ function loadSave() {
 }
 let SV = loadSave();
 function persist() { if (TEST) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(SV)); } catch (e) {} }
-function upCost(u) { return Math.round(u.base * Math.pow(1.55, SV.up[u.k]) / 10) * 10; }
+function upCost(u) { return Math.round(u.base * Math.pow(1 + SV.up[u.k], u.ex) / 10) * 10; }
 function buyUp(u) {
   if (SV.up[u.k] >= u.max) return false;
   const c = upCost(u); if (SV.gold < c) return false;
@@ -84,51 +87,52 @@ function buyUp(u) {
 }
 function xpNeed(l) { return Math.round(20 + 14 * Math.pow(l, 1.5)); }
 function maxHP() { return 100 + 25 * SV.up.hp + 4 * (SV.lvl - 1); }
-function dmgBase() { return 10 * (1 + 0.15 * SV.up.atk) * (1 + 0.04 * (SV.lvl - 1)); }
+function dmgBase() { return 10 * (1 + 0.15 * SV.up.atk) * (1 + 0.03 * (SV.lvl - 1)); }
 function fireInt() { return 0.12 * Math.pow(0.93, SV.up.rate); }
 function magR() { return 40 + 24 * SV.up.mag; }
 function gainXP(n) {
   SV.xp += n; if (G) G.xpGot += n;
-  while (SV.lvl < 50 && SV.xp >= xpNeed(SV.lvl)) {
+  while (SV.lvl < LVMAX && SV.xp >= xpNeed(SV.lvl)) {
     SV.xp -= xpNeed(SV.lvl); SV.lvl++;
     if (G && G.p && !G.p.dead) {
       G.p.hp = Math.min(maxHP(), G.p.hp + maxHP() * 0.25);
       floatText(G.p.x, G.p.y - 34, "LEVEL UP! Lv " + SV.lvl, "#7cff9b", 1.6); sfx("lvl");
     }
   }
-  if (SV.lvl >= 50) SV.xp = 0;
+  if (SV.lvl >= LVMAX) SV.xp = 0;
 }
 
 // ======================================================================
-// 지역 · 난이도
+// 지역 (10곳 × 20판) · 난이도
 // ======================================================================
-const WORLDS = [
-  { name: "남태평양", sea: "#1d5fa6", sea2: "#3a7cc4", kind: "sea", foe: "#c8504a" },
-  { name: "산호 군도", sea: "#167f9b", sea2: "#2d9cb8", kind: "islands", foe: "#d38b2f" },
-  { name: "붉은 사막", sea: "#c9a160", sea2: "#b48a4a", kind: "desert", foe: "#55703a" },
-  { name: "설원 산맥", sea: "#d5e0ea", sea2: "#b9c8d6", kind: "snow", foe: "#4f6488" },
-  { name: "폭풍의 밤바다", sea: "#0d1d38", sea2: "#1c3157", kind: "night", foe: "#9a46c0" },
+const REGIONS = [
+  { name: "남태평양", sea: "#1d5fa6", sea2: "#3a7cc4", kind: "sea", foe: "#c8504a", bomber: "#7a8b6a", ground: "boat", hull: ["#5f6b78", "#8a96a3"] },
+  { name: "산호 군도", sea: "#167f9b", sea2: "#2d9cb8", kind: "islands", foe: "#d38b2f", bomber: "#8b6f4a", ground: "boat", hull: ["#5d6e5a", "#8a9c84"] },
+  { name: "붉은 사막", sea: "#c9a160", sea2: "#b48a4a", kind: "desert", foe: "#55703a", bomber: "#6a6f7a", ground: "tank", hull: ["#8a7a4a", "#a8955c"] },
+  { name: "설원 산맥", sea: "#d5e0ea", sea2: "#b9c8d6", kind: "snow", foe: "#4f6488", bomber: "#5a6a7a", ground: "tank", hull: ["#6c7a8a", "#9aa8b8"] },
+  { name: "폭풍의 밤바다", sea: "#0d1d38", sea2: "#1c3157", kind: "night", foe: "#9a46c0", bomber: "#5a3a6a", ground: "boat", hull: ["#3a3f52", "#5c6380"] },
+  { name: "밀림의 강", sea: "#2f6b2a", sea2: "#3f8a37", kind: "jungle", foe: "#b5462e", bomber: "#6b5a3a", ground: "tank", hull: ["#55603a", "#7a8a52"] },
+  { name: "화산 지대", sea: "#3b2622", sea2: "#5a2d22", kind: "volcano", foe: "#e0a030", bomber: "#4a3a3a", ground: "tank", hull: ["#4a3a36", "#6e5650"] },
+  { name: "빙하 바다", sea: "#2a6f8f", sea2: "#8fd0e8", kind: "ice", foe: "#3b5ba5", bomber: "#6a7a8a", ground: "boat", hull: ["#61788c", "#93aec4"] },
+  { name: "폐허 도시", sea: "#3d4148", sea2: "#4d525a", kind: "city", foe: "#8a8f3a", bomber: "#5a5f4a", ground: "tank", hull: ["#555a52", "#7d8478"] },
+  { name: "성층권", sea: "#14245a", sea2: "#2e4590", kind: "stratos", foe: "#c0c0c8", bomber: "#3a3a4a", ground: null, hull: ["#30324a", "#555a78"] },
 ];
-const BOMBER_COL = ["#7a8b6a", "#8b6f4a", "#6a6f7a", "#5a6a7a", "#5a3a6a"];
-const BOSS_NAMES = ["철갑 전함 크라켄", "거대 폭격기 알바트로스", "사막 요새 베헤모스", "공중 요새 발할라", "흑색 에이스 네메시스"];
-const worldIdx = s => Math.floor((s - 1) / 10);
+const regionIdx = s => Math.floor((s - 1) / 20);
 function hpScale(s) { const k = s - 1; return 1 + 0.15 * k + 0.006 * k * k; }
-function bulletSpd(s) { return 105 + 2.2 * s; }
+function bulletSpd(s) { return 105 + 110 * (1 - Math.exp(-s / 60)); }
 function enemyDmg(s) { return Math.round(8 + 0.5 * s); }
+function fireF(s) { return 1 + Math.min(s, 120) * 0.015; }
+function bossF(s) { return 1 + Math.min(s, 100) * 0.006; }
 
 // ======================================================================
-// 도트 그림
+// 도트 그림 (처음 한 번만 만들어 두고 계속 재사용)
 // ======================================================================
 const PLANE = [
   ".......w", ".......w", "......kg", "......gc", "......gc", "kgggggGg", "gGGGGGgg",
   "kggggggg", "......gg", "......gg", "......gg", "....kggg", "...kgGgg", ".......k",
 ];
-const FOE = [
-  ".....d", "...ddd", ".....r", ".....r", "drrrrr", "rRRRRr", "drrrrr", ".....r", ".....c", ".....r", ".....w",
-];
-const ACE = [
-  "....dd", "...ddd", ".....a", "....aa", "daaaaa", "aYYaaa", "daaaaa", "....aa", ".....c", ".....a", ".....Y",
-];
+const FOE = [".....d", "...ddd", ".....r", ".....r", "drrrrr", "rRRRRr", "drrrrr", ".....r", ".....c", ".....r", ".....w"];
+const ACE = ["....dd", "...ddd", ".....a", "....aa", "daaaaa", "aYYaaa", "daaaaa", "....aa", ".....c", ".....a", ".....Y"];
 const BOMBER = [
   "...........d", ".........ddd", "...........b", "...........b", "...........b", "..bbbbbbbbbb",
   "bbEbbbbEbbbb", "bBBBBBBBBBbb", "...........b", "...........b", "..........cb", "..........cb",
@@ -150,22 +154,26 @@ const PLP = { g: "#4caf50", G: "#2e7d32", k: "#1b3d1f", w: "#e0e0e0", c: "#81d4f
 const WINGP = { g: "#90a4ae", G: "#607d8b", k: "#263238", w: "#e0e0e0", c: "#81d4fa" };
 const ACEP = { a: "#2b2b33", Y: "#ffca28", d: "#000000", c: "#ef5350" };
 const NEMP = { a: "#16161c", Y: "#e53935", d: "#000000", c: "#ff8a80" };
+const LEADP = { a: "#7b1f1f", Y: "#ffd54f", d: "#2a0a0a", c: "#90caf9" };
+const KAMIP = { r: "#ff7043", R: "#ffe0b2", d: "#3e1a0a", c: "#ffeb3b", w: "#ffffff" };
 const PL = {
   plane: mkSprite(PLANE, PLP, 2), planeS: mkSprite(PLANE, "shadow", 2), wing: mkSprite(PLANE, WINGP, 1),
-  nem: mkSprite(ACE, NEMP, 5), nemW: mkSprite(ACE, "white", 5),
+  omega: mkSprite(ACE, NEMP, 7), omegaW: mkSprite(ACE, "white", 7),
+  lead: mkSprite(ACE, LEADP, 3), leadW: mkSprite(ACE, "white", 3),
+  kami: mkSprite(FOE, KAMIP, 2), kamiW: mkSprite(FOE, "white", 2), kamiS: mkSprite(FOE, "shadow", 2),
 };
 const SPR = {};
-function spr(w) {
-  if (SPR[w]) return SPR[w];
-  const fp = { r: WORLDS[w].foe, R: "#ffe9a8", d: "#2a1d1d", c: "#8fd3ff", w: "#cfcfcf" };
-  const bp = { b: BOMBER_COL[w], B: "#d9d9c0", E: "#2b2b2b", c: "#8fd3ff", w: "#cfcfcf", d: "#222222" };
-  SPR[w] = {
+function spr(r) {
+  if (SPR[r]) return SPR[r];
+  const fp = { r: REGIONS[r].foe, R: "#ffe9a8", d: "#2a1d1d", c: "#8fd3ff", w: "#cfcfcf" };
+  const bp = { b: REGIONS[r].bomber, B: "#d9d9c0", E: "#2b2b2b", c: "#8fd3ff", w: "#cfcfcf", d: "#222222" };
+  SPR[r] = {
     fighter: mkSprite(FOE, fp, 2), fighterW: mkSprite(FOE, "white", 2), fighterS: mkSprite(FOE, "shadow", 2),
     ace: mkSprite(ACE, ACEP, 2), aceW: mkSprite(ACE, "white", 2), aceS: mkSprite(ACE, "shadow", 2),
     bomber: mkSprite(BOMBER, bp, 2), bomberW: mkSprite(BOMBER, "white", 2), bomberS: mkSprite(BOMBER, "shadow", 2),
     mid: mkSprite(BOMBER, bp, 4), midW: mkSprite(BOMBER, "white", 4),
   };
-  return SPR[w];
+  return SPR[r];
 }
 function mkBullet(r, core, rim) {
   const s = Math.ceil(r * 2 + 5), c = document.createElement("canvas"); c.width = c.height = s;
@@ -175,31 +183,69 @@ function mkBullet(r, core, rim) {
   return c;
 }
 const BUL = { n: mkBullet(3.5, "#ffffff", "#ff3d6e"), big: mkBullet(6, "#ffffff", "#ff9100") };
+const COINF = [0, 1, 2, 3, 4, 5].map(i => {
+  const c = document.createElement("canvas"); c.width = 16; c.height = 16; const g = c.getContext("2d");
+  const w = Math.abs(Math.cos(i / 6 * Math.PI)) * 5 + 1;
+  g.fillStyle = "#8d6e00"; g.beginPath(); g.ellipse(8.6, 8.6, w + 1, 6.2, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#ffd54f"; g.beginPath(); g.ellipse(8, 8, w, 5.5, 0, 0, Math.PI * 2); g.fill();
+  return c;
+});
 
 // ======================================================================
-// 배경
+// 배경 (지역마다 바닥 무늬를 한 장 그려 두고 이어 붙여 스크롤)
 // ======================================================================
-const BG = { y: 0, world: 0, deco: [], next: 0, imgs: {} };
+const BG = { y: 0, world: 0, deco: [], next: 0, imgs: {}, tiles: {} };
+function bgTile(r) {
+  if (BG.tiles[r]) return BG.tiles[r];
+  const c = document.createElement("canvas"); c.width = W; c.height = 560;
+  const g = c.getContext("2d"), reg = REGIONS[r], R = rng(r * 31 + 7);
+  g.fillStyle = reg.sea; g.fillRect(0, 0, W, 560);
+  g.fillStyle = reg.sea2;
+  for (let j = 0; j < 20; j++) for (let i = 0; i < 7; i++) { const h = hash(i, j); if (h < 0.5) g.fillRect(i * 52 + h * 44, j * 28 + h * 10, 8 + h * 18, 2); }
+  if (reg.kind === "city") { g.fillStyle = "#2c2f34"; for (let y = 0; y < 560; y += 140) g.fillRect(0, y, W, 14); g.fillRect(110, 0, 12, 560); g.fillRect(250, 0, 12, 560); }
+  if (reg.kind === "volcano") {
+    g.strokeStyle = "#c2410c"; g.lineWidth = 2;
+    for (let i = 0; i < 9; i++) { let x = R() * W, y = R() * 520; g.beginPath(); g.moveTo(x, y); for (let k = 0; k < 4; k++) { x += (R() - 0.5) * 40; y += 8 + R() * 14; g.lineTo(x, y); } g.stroke(); }
+  }
+  if (reg.kind === "jungle") { g.fillStyle = "#3a6fa0"; g.fillRect(150, 0, 46, 560); g.fillStyle = "#4f86b8"; for (let y = 0; y < 560; y += 22) g.fillRect(160 + (y % 3) * 6, y, 10, 2); }
+  if (reg.kind === "stratos") { g.fillStyle = "#ffffff"; for (let i = 0; i < 40; i++) g.fillRect(R() * W, R() * 560, 1.5, 1.5); }
+  return (BG.tiles[r] = c);
+}
 function mkDeco(w, R) {
   const c = document.createElement("canvas"); c.width = 150; c.height = 120;
-  const g = c.getContext("2d"), k = WORLDS[w].kind, blobs = [], n = 4 + Math.floor(R() * 5);
+  const g = c.getContext("2d"), k = REGIONS[w].kind, blobs = [], n = 4 + Math.floor(R() * 5);
   for (let i = 0; i < n; i++) blobs.push([75 + (R() - 0.5) * 70, 60 + (R() - 0.5) * 50, 14 + R() * 20]);
   const circ = (x, y, r, col) => { g.fillStyle = col; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
+  const tri = (x, y, s, col) => { g.fillStyle = col; g.beginPath(); g.moveTo(x, y - s); g.lineTo(x + s * 0.8, y + s * 0.6); g.lineTo(x - s * 0.8, y + s * 0.6); g.closePath(); g.fill(); };
   if (k === "desert") {
     blobs.forEach(b => circ(b[0] + 4, b[1] + 4, b[2], "#8a6234"));
     blobs.forEach(b => circ(b[0], b[1], b[2], "#b07f45"));
     blobs.forEach(b => circ(b[0] - b[2] * 0.3, b[1] - b[2] * 0.3, b[2] * 0.35, "#c99a5c"));
   } else if (k === "snow") {
+    blobs.forEach(b => { tri(b[0], b[1], b[2] * 1.2, "#7d8794"); tri(b[0], b[1] - b[2] * 0.75, b[2] * 0.45, "#ffffff"); });
+    for (let i = 0; i < 8; i++) tri(10 + R() * 130, 10 + R() * 100, 7, "#2e5b3a");
+  } else if (k === "jungle") {
+    blobs.forEach(b => circ(b[0], b[1], b[2] + 3, "#1f4d1c"));
+    blobs.forEach(b => circ(b[0] - 3, b[1] - 3, b[2], "#2e6b27"));
+    blobs.forEach(b => circ(b[0] - b[2] * 0.3, b[1] - b[2] * 0.3, b[2] * 0.4, "#4c9a3f"));
+  } else if (k === "volcano") {
+    blobs.forEach(b => circ(b[0] + 3, b[1] + 3, b[2], "#1e1311"));
+    blobs.forEach(b => circ(b[0], b[1], b[2], "#4a2e28"));
+    const m = blobs[0]; circ(m[0], m[1], m[2] * 0.45, "#ff6a00"); circ(m[0], m[1], m[2] * 0.22, "#ffd180");
+  } else if (k === "ice") {
     blobs.forEach(b => {
-      g.fillStyle = "#7d8794"; g.beginPath(); g.moveTo(b[0], b[1] - b[2] * 1.2);
-      g.lineTo(b[0] + b[2], b[1] + b[2] * 0.7); g.lineTo(b[0] - b[2], b[1] + b[2] * 0.7); g.closePath(); g.fill();
-      g.fillStyle = "#ffffff"; g.beginPath(); g.moveTo(b[0], b[1] - b[2] * 1.2);
-      g.lineTo(b[0] + b[2] * 0.38, b[1] - b[2] * 0.45); g.lineTo(b[0] - b[2] * 0.38, b[1] - b[2] * 0.45); g.closePath(); g.fill();
+      g.fillStyle = "#b3e0f2"; g.beginPath(); for (let a = 0; a < 6; a++) { const rr = b[2] * (0.8 + R() * 0.4), an = a / 6 * Math.PI * 2; g.lineTo(b[0] + Math.cos(an) * rr + 3, b[1] + Math.sin(an) * rr + 3); } g.fill();
+      g.fillStyle = "#f2fbff"; g.beginPath(); for (let a = 0; a < 6; a++) { const rr = b[2] * (0.75 + R() * 0.3), an = a / 6 * Math.PI * 2; g.lineTo(b[0] + Math.cos(an) * rr, b[1] + Math.sin(an) * rr); } g.fill();
     });
-    for (let i = 0; i < 8; i++) {
-      const x = 10 + R() * 130, y = 10 + R() * 100;
-      g.fillStyle = "#2e5b3a"; g.beginPath(); g.moveTo(x, y - 7); g.lineTo(x + 4, y + 4); g.lineTo(x - 4, y + 4); g.closePath(); g.fill();
+  } else if (k === "city") {
+    for (let i = 0; i < 5; i++) {
+      const x = 10 + R() * 100, y = 10 + R() * 70, w2 = 22 + R() * 26, h2 = 22 + R() * 30;
+      g.fillStyle = "#24272c"; g.fillRect(x + 4, y + 4, w2, h2); g.fillStyle = "#6b707a"; g.fillRect(x, y, w2, h2);
+      g.fillStyle = "#555a63"; g.fillRect(x + 3, y + 3, w2 - 6, h2 - 6);
+      for (let q = 0; q < 4; q++) if (R() < 0.6) { g.fillStyle = "#ffd54f"; g.fillRect(x + 5 + R() * (w2 - 10), y + 5 + R() * (h2 - 10), 2, 2); }
     }
+  } else if (k === "stratos") {
+    blobs.forEach(b => circ(b[0], b[1], b[2] + 6, "#c4d3f5")); blobs.forEach(b => circ(b[0] - 3, b[1] - 3, b[2], "#eef3ff"));
   } else {
     const night = k === "night";
     const sand = night ? "#24324a" : "#e9d8a6", gr = night ? "#14261c" : "#4f9d45", dk = night ? "#0d1a12" : "#2f7a32";
@@ -217,33 +263,25 @@ function mkCloud(R) {
   return c;
 }
 function decoImgs(w) {
-  if (!BG.imgs[w]) {
-    BG.imgs[w] = { ground: [0, 1, 2, 3].map(i => mkDeco(w, rng(w * 100 + i + 1))), cloud: [0, 1, 2].map(i => mkCloud(rng(900 + i))) };
-  }
+  if (!BG.imgs[w]) BG.imgs[w] = { ground: [0, 1, 2, 3].map(i => mkDeco(w, rng(w * 100 + i + 1))), cloud: [0, 1, 2].map(i => mkCloud(rng(900 + i))) };
   return BG.imgs[w];
 }
 function updBg(dt, scroll) {
   BG.y += scroll * dt;
-  const imgs = decoImgs(BG.world), k = WORLDS[BG.world].kind;
+  const imgs = decoImgs(BG.world), k = REGIONS[BG.world].kind;
   BG.next -= dt;
   if (BG.next <= 0) {
-    const cloud = Math.random() < (k === "night" ? 0.5 : 0.35);
+    const cloud = Math.random() < (k === "night" ? 0.5 : k === "stratos" ? 0.15 : 0.35);
     BG.deco.push({ img: cloud ? imgs.cloud[Math.floor(Math.random() * 3)] : imgs.ground[Math.floor(Math.random() * 4)],
       cloud, x: rnd(-30, W + 30), y: -130, sp: cloud ? 1.7 : 1, a: cloud ? (k === "night" ? 0.16 : 0.4) : 1 });
-    BG.next = k === "islands" ? rnd(1.2, 2.6) : rnd(2.2, 4.8);
+    BG.next = k === "islands" || k === "city" ? rnd(1.2, 2.6) : rnd(2.2, 4.8);
   }
   for (const d of BG.deco) d.y += scroll * d.sp * dt;
-  BG.deco = BG.deco.filter(d => d.y < H + 20);
+  compact(BG.deco, d => d.y < H + 20);
 }
 function drawBgBase() {
-  const w = WORLDS[BG.world];
-  ctx.fillStyle = w.sea; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = w.sea2;
-  const base = Math.floor(BG.y / 28), off = BG.y - base * 28;
-  for (let j = -1; j < H / 28 + 1; j++) {
-    const r = j - base, y = j * 28 + off;
-    for (let i = 0; i < 7; i++) { const h = hash(i, r); if (h < 0.5) ctx.fillRect(i * 52 + h * 44, y + h * 10, 8 + h * 18, 2); }
-  }
+  const t = bgTile(BG.world), off = BG.y % 560;
+  for (let y = off - 560; y < H; y += 560) ctx.drawImage(t, 0, 0, W, 560, 0, y, W, 561);
   for (const d of BG.deco) if (!d.cloud) ctx.drawImage(d.img, d.x - d.img.width / 2, d.y);
 }
 function drawClouds() {
@@ -252,13 +290,19 @@ function drawClouds() {
 }
 
 // ======================================================================
-// 소리
+// 소리 (게임 중에만 오디오 장치를 켠다)
 // ======================================================================
 let AC = null, noiseBuf = null;
 const sfxLast = {};
 function unlockAudio() {
-  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
-  if (AC && AC.state === "suspended") AC.resume();
+  if (!AC && SV.sound) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  audioPolicy();
+}
+function audioPolicy() {
+  if (!AC) return;
+  const want = SV.sound && (scene === "play" || scene === "result" || scene === "over") && !document.hidden;
+  if (want && AC.state === "suspended") AC.resume();
+  else if (!want && AC.state === "running") AC.suspend();
 }
 function tone(f0, f1, dur, type, vol) {
   const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
@@ -277,20 +321,20 @@ function noise(dur, vol, fc) {
   s.connect(f).connect(g).connect(AC.destination); s.start(t); s.stop(t + dur);
 }
 const SFX = {
-  shot: [0.09, () => tone(900, 500, 0.04, "square", 0.012)],
-  boom: [0.05, () => noise(0.35, 0.22, 1800)],
-  big: [0.1, () => noise(1.0, 0.4, 1200)],
+  shot: [0.16, () => tone(900, 500, 0.04, "square", 0.012)],
+  boom: [0.07, () => noise(0.35, 0.22, 1800)],
+  big: [0.12, () => noise(1.0, 0.4, 1200)],
   hit: [0.1, () => { noise(0.2, 0.3, 3000); tone(220, 60, 0.2, "sawtooth", 0.08); }],
   item: [0.05, () => tone(660, 1320, 0.12, "square", 0.05)],
-  coin: [0.04, () => tone(1300, 1900, 0.05, "square", 0.025)],
+  coin: [0.06, () => tone(1300, 1900, 0.05, "square", 0.025)],
   lvl: [0.2, () => { tone(523, 1046, 0.3, "square", 0.06); tone(659, 1318, 0.3, "triangle", 0.05); }],
   bomb: [0.2, () => noise(1.3, 0.5, 900)],
   warn: [0.5, () => tone(440, 220, 0.5, "sawtooth", 0.07)],
-  click: [0.05, () => tone(600, 900, 0.04, "square", 0.035)],
   clear: [0.5, () => { tone(523, 784, 0.25, "square", 0.05); tone(784, 1046, 0.4, "triangle", 0.05); }],
 };
 function sfx(n) {
   if (TEST || !AC || !SV.sound || AC.state !== "running") return;
+  if (n === "shot" && SV.saver) return;
   const s = SFX[n], now = performance.now() / 1000; if (!s) return;
   if (sfxLast[n] && now - sfxLast[n] < s[0]) return;
   sfxLast[n] = now; try { s[1](); } catch (e) {}
@@ -300,23 +344,26 @@ function vibrate(ms) { if (!TEST && navigator.vibrate) { try { navigator.vibrate
 // ======================================================================
 // 스테이지 구성
 // ======================================================================
-function stageLen(s) { return 42 + s * 0.36; }
+function stageLen(s) { return 30 + Math.min(20, s * 0.1); }
 function buildStage(s) {
-  const R = rng(s * 7919 + 13), ev = [], len = stageLen(s), gap = Math.max(0.85, 2.7 - s * 0.037);
-  const types = ["line", "vee", "side", "dive", "line", "side"];
-  if (s >= 3) types.push("ground");
-  if (s >= 4) types.push("bomber");
-  if (s >= 6) types.push("ground", "vee");
-  if (s >= 8) types.push("ace");
-  if (s >= 14) types.push("swarm");
-  if (s >= 25) types.push("ace", "bomber");
+  const R = rng(s * 7919 + 13), ev = [], len = stageLen(s), gap = Math.max(0.85, 2.7 - s * 0.037), reg = REGIONS[regionIdx(s)];
+  const T = ["line", "vee", "side", "dive", "line", "side"];
+  const add = (min, ...k) => { if (s >= min) T.push(...k); };
+  if (reg.ground) { add(3, "ground"); add(6, "ground"); }
+  add(4, "bomber"); add(6, "vee"); add(8, "ace"); add(10, "heli"); add(14, "swarm"); add(15, "kami");
+  add(25, "mine", "ace", "bomber"); add(35, "gunship"); add(60, "heli", "kami"); add(100, "ace", "gunship", "mine");
+  if (reg.kind === "stratos") add(1, "swarm", "kami", "side");
+  if (reg.kind === "city") add(3, "ground", "heli");
+  if (reg.kind === "ice") add(25, "mine");
+  if (reg.kind === "jungle") add(10, "heli");
+  if (reg.kind === "volcano") add(25, "bomber");
   let t = 2.4;
   while (t < len) {
-    const ty = types[Math.floor(R() * types.length)];
+    const ty = T[Math.floor(R() * T.length)];
     ev.push({ t, type: ty, seed: Math.floor(R() * 1e9) });
-    t += gap * (ty === "bomber" || ty === "ace" ? 1.6 : 1) * (0.8 + R() * 0.5);
+    t += gap * (ty === "bomber" || ty === "ace" || ty === "gunship" ? 1.6 : 1) * (0.8 + R() * 0.5);
   }
-  ev.push({ t: len + 2, type: s % 10 === 0 ? "boss" : s % 5 === 0 ? "midboss" : "end" });
+  ev.push({ t: len + 2, type: "boss" });
   return ev;
 }
 const EK = {
@@ -326,6 +373,10 @@ const EK = {
   ground: { hp: 60, r: 14, gold: 3, xp: 6, score: 300 },
   bomber: { hp: 420, r: 24, gold: 12, xp: 30, score: 2000 },
   ace: { hp: 160, r: 12, gold: 8, xp: 18, score: 1500 },
+  heli: { hp: 90, r: 14, gold: 4, xp: 8, score: 600 },
+  kami: { hp: 14, r: 9, gold: 1, xp: 2, score: 80 },
+  mine: { hp: 40, r: 10, gold: 2, xp: 3, score: 200 },
+  gunship: { hp: 300, r: 22, gold: 10, xp: 25, score: 1800 },
 };
 function addE(o) {
   const k = EK[o.kind], s = G.stage;
@@ -340,13 +391,13 @@ function spawnWave(ev) {
   switch (ev.type) {
     case "line": {
       const x = 40 + R() * (W - 80), amp = 20 + R() * 40, fq = 2 + R(); reg(5);
-      for (let i = 0; i < 5; i++) addE({ kind: "fighter", x, y: -20 - i * 34, vy: 95 + s * 0.8, amp, freq: fq, wave: wid });
+      for (let i = 0; i < 5; i++) addE({ kind: "fighter", x, y: -20 - i * 34, vy: 95 + Math.min(s, 120) * 0.8, amp, freq: fq, wave: wid });
       break;
     }
     case "vee": {
       const cx = 80 + R() * (W - 160); reg(5);
       [[0, 0], [-26, -24], [26, -24], [-52, -48], [52, -48]].forEach(([dx, dy]) =>
-        addE({ kind: "fighter", x: cx + dx, y: -24 + dy, vy: 80 + s * 0.7, amp: 0, freq: 0, wave: wid, shooter: true }));
+        addE({ kind: "fighter", x: cx + dx, y: -24 + dy, vy: 80 + Math.min(s, 120) * 0.7, amp: 0, freq: 0, wave: wid, shooter: true }));
       break;
     }
     case "side": {
@@ -367,11 +418,13 @@ function spawnWave(ev) {
     case "bomber": addE({ kind: "bomber", x: 60 + R() * (W - 120), y: -40 }); break;
     case "ace": addE({ kind: "ace", x: R() * W, y: -20 }); break;
     case "swarm":
-      for (let i = 0; i < 10; i++) addE({ kind: "fighter", x: 20 + R() * (W - 40), y: -20 - R() * 200, vy: 170 + s, amp: 0, freq: 0, small: true });
+      for (let i = 0; i < 10; i++) addE({ kind: "fighter", x: 20 + R() * (W - 40), y: -20 - R() * 200, vy: 170 + Math.min(s, 120), amp: 0, freq: 0, small: true });
       break;
-    case "midboss": spawnBoss(true); break;
-    case "boss": spawnBoss(false); break;
-    case "end": G.ending = true; G.endAt = G.t; break;
+    case "heli": for (let i = 0; i < 2; i++) addE({ kind: "heli", x: 70 + i * (W - 140) + (R() - 0.5) * 40, y: -24, ty: 70 + R() * 100 }); break;
+    case "kami": for (let i = 0; i < 4; i++) addE({ kind: "kami", x: 30 + R() * (W - 60), y: -20, delay: i * 0.3 }); break;
+    case "mine": for (let i = 0; i < 3; i++) addE({ kind: "mine", x: 40 + R() * (W - 80), y: -20 - i * 50 }); break;
+    case "gunship": { const left = R() < 0.5; addE({ kind: "gunship", x: left ? -80 : W + 80, y: 60 + R() * 70, vx: left ? 55 : -55 }); break; }
+    case "boss": spawnBoss(); break;
   }
 }
 
@@ -379,23 +432,24 @@ function spawnWave(ev) {
 // 게임 시작 · 종료
 // ======================================================================
 function newGame(stage) {
-  const world = worldIdx(stage);
-  BG.world = world; BG.deco = []; BG.next = 0;
+  const r = regionIdx(stage);
+  BG.world = r; BG.deco = []; BG.next = 0;
   G = {
-    stage, world, t: 0, scroll: 46, god: false, bot: false,
+    stage, reg: r, t: 0, scroll: 46, god: false, bot: false, skill: 1,
     p: { x: W / 2, y: H - safeB - 110, hp: maxHP(), inv: 2.2, fireT: 0.3, misT: 0, bombs: 2 + SV.up.bomb, wl: SV.wl, dead: false, wingX: [W / 2, W / 2] },
     pb: [], eb: [], en: [], items: [], fx: [], texts: [],
-    timeline: buildStage(stage), ti: 0, boss: null, ending: false, endAt: 0,
+    timeline: buildStage(stage), ti: 0, boss: null,
     kills: 0, goldGot: 0, xpGot: 0, score: 0, hitsTaken: 0, dmgTaken: 0, bonus: 0,
     state: "play", endT: 0, finished: false, shake: 0, flash: 0, bombFx: 0, light: 0, stormT: 5,
-    waves: {}, waveSeq: 0, maxEb: 0, bossT: 0, bossStart: 0, wasAllClear: SV.allClear, newBest: false,
-    banner: { text: "STAGE " + stage, sub: WORLDS[world].name, t: 2.6 },
+    waves: {}, waveSeq: 0, maxEb: 0, bossT: 0, bossStart: 0, newBest: false,
+    was100: SV.clear100, was200: SV.clear200,
+    banner: { text: "STAGE " + stage, sub: REGIONS[r].name, t: 2.6 },
   };
 }
 function startStage(s) { nextStage = s; newGame(s); go("play"); }
 function startClear() {
   const g = G; if (g.state !== "play") return;
-  g.state = "clearing"; g.endT = 0; g.eb = [];
+  g.state = "clearing"; g.endT = 0; g.eb.length = 0;
   for (const it of g.items) it.mag = true;
   g.banner = { text: "STAGE CLEAR!", sub: "", t: 3 }; sfx("clear");
 }
@@ -404,16 +458,17 @@ function finishStage(win) {
   if (win) {
     g.bonus = 20 + g.stage * 6 + (g.hitsTaken === 0 ? 50 + g.stage * 4 : 0);
     SV.gold += g.goldGot + g.bonus; SV.cleared[g.stage] = 1;
-    SV.unlocked = Math.max(SV.unlocked, Math.min(50, g.stage + 1));
+    SV.unlocked = Math.max(SV.unlocked, Math.min(MAXS, g.stage + 1));
     SV.wl = g.p.wl;
     if ((SV.best[g.stage] || 0) < g.score) { SV.best[g.stage] = g.score; g.newBest = true; }
-    if (g.stage === 50) SV.allClear = true;
-    nextStage = Math.min(50, g.stage + 1);
-    go(g.stage === 50 && !g.wasAllClear ? "ending" : "result", true);
+    if (g.stage === 100) SV.clear100 = true;
+    if (g.stage === 200) SV.clear200 = true;
+    nextStage = Math.min(MAXS, g.stage + 1);
+    go(g.stage === 200 && !g.was200 ? "ending" : g.stage === 100 && !g.was100 ? "midend" : "result");
   } else {
     g.kept = Math.floor(g.goldGot * 0.5); SV.gold += g.kept;
     SV.wl = Math.max(1, g.p.wl - 1); nextStage = g.stage;
-    go("over", true);
+    go("over");
   }
   persist();
 }
@@ -421,11 +476,12 @@ function abortStage() {
   if (G && !G.finished) { G.finished = true; SV.gold += Math.floor(G.goldGot * 0.5); persist(); }
   go("hangar");
 }
-function go(sc, quiet) {
+function go(sc) {
   scene = sc; inp.downBtn = null; inp.dragId = null; resetArm = 0;
-  if (sc === "hangar") BG.world = worldIdx(nextStage);
-  if (sc === "title" || sc === "select" || sc === "help") BG.world = 0;
-  if (!quiet) sfx("click");
+  if (sc === "hangar") BG.world = regionIdx(nextStage);
+  if (sc === "title" || sc === "help") BG.world = 0;
+  if (sc === "select") { selRegion = regionIdx(nextStage); BG.world = selRegion; }
+  audioPolicy(); wake();
 }
 
 // ======================================================================
@@ -433,9 +489,9 @@ function go(sc, quiet) {
 // ======================================================================
 function update(dt) {
   uiT += dt;
-  if (toast) { toast.t -= dt; if (toast.t <= 0) toast = null; }
+  if (toast) { toast.t -= dt; if (toast.t <= 0) { toast = null; dirty = true; } }
   if (scene === "play") updGame(dt);
-  else if (scene !== "pause" && scene !== "result" && scene !== "over") updBg(dt, 40);
+  else if (scene === "title" || scene === "ending" || scene === "midend") updBg(dt, 40);
 }
 function updGame(dt) {
   const g = G; g.t += dt;
@@ -447,20 +503,19 @@ function updGame(dt) {
   if (g.boss) updBoss(g.boss, dt);
   for (const b of g.eb) { b.x += b.vx * dt; b.y += b.vy * dt; }
   collide();
-  g.pb = g.pb.filter(b => !b.dead && b.y > -30 && b.y < H + 30 && b.x > -30 && b.x < W + 30);
-  g.eb = g.eb.filter(b => !b.dead && b.y > -40 && b.y < H + 40 && b.x > -40 && b.x < W + 40);
-  g.en = g.en.filter(e => !e.dead && !offscreen(e));
+  compact(g.pb, b => !b.dead && b.y > -30 && b.y < H + 30 && b.x > -30 && b.x < W + 30);
+  compact(g.eb, b => !b.dead && b.y > -40 && b.y < H + 40 && b.x > -40 && b.x < W + 40);
+  compact(g.en, e => !e.dead && !offscreen(e));
   if (g.eb.length > g.maxEb) g.maxEb = g.eb.length;
   updItems(dt); updFx(dt);
   g.shake = Math.max(0, g.shake - dt); g.flash = Math.max(0, g.flash - dt);
   g.bombFx = Math.max(0, g.bombFx - dt * 1.5); g.light = Math.max(0, g.light - dt);
-  if (g.world === 4) { g.stormT -= dt; if (g.stormT <= 0) { g.light = 0.35; g.stormT = rnd(4, 9); } }
+  if (REGIONS[g.reg].kind === "night") { g.stormT -= dt; if (g.stormT <= 0) { g.light = 0.35; g.stormT = rnd(4, 9); } }
   if (g.banner) { g.banner.t -= dt; if (g.banner.t <= 0) g.banner = null; }
-  if (g.state === "play" && g.ending && !g.boss && (g.en.every(e => e.ground) || g.t - g.endAt > 25)) startClear();
   if (g.state === "clearing") { g.endT += dt; if (g.endT > 2.4) finishStage(true); }
   if (g.state === "dying") { g.endT += dt; if (g.endT > 2.0) finishStage(false); }
 }
-function offscreen(e) { return e.y > H + 60 || e.y < -600 || (e.t > 2 && (e.x < -70 || e.x > W + 70)); }
+function offscreen(e) { return e.y > H + 60 || e.y < -600 || (e.t > 2 && (e.x < -90 || e.x > W + 90)); }
 
 // ---------- 플레이어 ----------
 function updPlayer(dt) {
@@ -512,9 +567,11 @@ function steer(b, dt) {
   b.vx = Math.cos(a) * sp; b.vy = Math.sin(a) * sp;
 }
 function useBomb() {
-  const g = G, p = g.p;
-  if (!g || p.bombs <= 0 || p.dead || g.state !== "play") return;
-  p.bombs--; g.eb = []; p.inv = Math.max(p.inv, 1.6); g.bombFx = 1; g.shake = 0.5; sfx("bomb"); vibrate(80);
+  const g = G;
+  if (!g || scene !== "play") return;
+  const p = g.p;
+  if (p.bombs <= 0 || p.dead || g.state !== "play") return;
+  p.bombs--; g.eb.length = 0; p.inv = Math.max(p.inv, 1.6); g.bombFx = 1; g.shake = 0.5; sfx("bomb"); vibrate(80);
   const dmg = dmgBase() * 40;
   for (const e of g.en) if (e.y > -10 && !e.dead) hitEnemy(e, dmg);
   if (g.boss && !g.boss.dead && !g.boss.enter) damageBoss(g.boss, dmg * 2);
@@ -534,7 +591,7 @@ function hurt(d) {
 
 // ---------- 적 ----------
 function updEnemy(e, dt) {
-  e.t += dt; e.flash = Math.max(0, e.flash - dt);
+  e.t += dt; if (e.flash > 0) e.flash -= dt;
   const s = G.stage, p = G.p;
   switch (e.kind) {
     case "fighter": e.y += e.vy * dt; e.x = e.x0 + (e.amp ? e.amp * Math.sin(e.t * e.freq) : 0); break;
@@ -543,7 +600,7 @@ function updEnemy(e, dt) {
       if (!e.go) {
         e.y += (e.ty - e.y) * Math.min(1, dt * 2.5);
         if (e.t > 1.3) {
-          e.go = true; const a = Math.atan2(p.y - e.y, p.x - e.x), sp = 200 + s * 2;
+          e.go = true; const a = Math.atan2(p.y - e.y, p.x - e.x), sp = 200 + Math.min(s, 120) * 2;
           e.vx = Math.cos(a) * sp; e.vy = Math.sin(a) * sp;
           if (G.state === "play" && !p.dead) aimed(e, 1, 0);
         }
@@ -558,26 +615,52 @@ function updEnemy(e, dt) {
       if (e.tx === undefined || e.t > e.next) { e.tx = 30 + Math.random() * (W - 60); e.ty = 50 + Math.random() * 180; e.next = e.t + 1.6; }
       e.x += (e.tx - e.x) * Math.min(1, dt * 2.2); e.y += (e.ty - e.y) * Math.min(1, dt * 2.2);
       break;
+    case "heli":
+      if (e.t < 1.6) e.y += (e.ty - e.y) * Math.min(1, dt * 2);
+      else if (e.t < 8) e.x += Math.sin(e.t * 0.9) * 22 * dt;
+      else e.y += 90 * dt;
+      break;
+    case "kami": {
+      if (e.t < e.delay) break;
+      const sp = Math.min(260, 170 + s * 0.6);
+      let a = e.vx || e.vy ? Math.atan2(e.vy, e.vx) : Math.PI / 2;
+      if (e.t - e.delay < 3.5 && !p.dead) {
+        let da = Math.atan2(p.y - e.y, p.x - e.x) - a;
+        while (da > Math.PI) da -= Math.PI * 2; while (da < -Math.PI) da += Math.PI * 2;
+        a += clamp(da, -2.2 * dt, 2.2 * dt);
+      }
+      e.vx = Math.cos(a) * sp; e.vy = Math.sin(a) * sp; e.x += e.vx * dt; e.y += e.vy * dt;
+      break;
+    }
+    case "mine": e.y += 40 * dt; e.x += Math.sin(e.t * 1.3) * 12 * dt; break;
+    case "gunship": e.x += e.vx * dt; e.y += Math.sin(e.t) * 6 * dt; break;
   }
   e.fireT -= dt;
   if (e.fireT <= 0 && e.y > 10 && e.y < H * 0.75 && G.state === "play" && !p.dead) fireEnemy(e);
 }
 function fireEnemy(e) {
-  const s = G.stage, f = 1 + s * 0.02;
+  const s = G.stage, f = fireF(s);
   switch (e.kind) {
-    case "fighter": if (e.shooter || Math.random() < 0.55 + s * 0.01) aimed(e, 1, 0); e.fireT = (2.0 + Math.random() * 1.4) / f; break;
-    case "side": if (Math.random() < 0.5 + s * 0.01) aimed(e, 1, 0); e.fireT = (1.8 + Math.random()) / f; break;
-    case "diver": e.fireT = 99; break;
+    case "fighter": if (e.shooter || Math.random() < 0.55 + Math.min(s, 40) * 0.01) aimed(e, 1, 0); e.fireT = (2.0 + Math.random() * 1.4) / f; break;
+    case "side": if (Math.random() < 0.5 + Math.min(s, 40) * 0.01) aimed(e, 1, 0); e.fireT = (1.8 + Math.random()) / f; break;
     case "ground": aimed(e, s >= 20 ? 2 : 1, 0.18); e.fireT = (2.0 + Math.random()) / f; break;
     case "bomber":
       e.burst = (e.burst || 0) + 1;
       if (e.burst % 2) fan(e.x, e.y + 8, 5 + Math.min(4, Math.floor(s / 12)), 0.9, bulletSpd(s) * 0.85); else aimed(e, 3, 0.2);
       e.fireT = 1.5 / f; break;
     case "ace": aimed(e, 3, 0.22); e.fireT = 1.2 / f; break;
+    case "heli": {
+      if (e.t < 1.6 || e.t > 8) { e.fireT = 0.4; break; }
+      const n = s >= 60 ? 8 : 6; e.rot = (e.rot || 0) + 0.3;
+      for (let k = 0; k < n; k++) eShot(e.x, e.y, e.rot + k * Math.PI * 2 / n, bulletSpd(s) * 0.6);
+      e.fireT = 2.4 / f; break;
+    }
+    case "gunship": aimed(e, 3, 0.18); e.fireT = 1.6 / f; break;
+    default: e.fireT = 99;
   }
 }
 function eShot(x, y, a, sp, big) {
-  if (G.eb.length > 650) return;
+  if (G.eb.length > 450) return;
   G.eb.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: big ? 6 : 3.5, big: !!big });
 }
 function aimed(e, n, spread, sp) {
@@ -589,10 +672,12 @@ function fan(x, y, n, arc, sp) { for (let i = 0; i < n; i++) eShot(x, y, Math.PI
 function hitEnemy(e, d) { e.hp -= d; e.flash = 0.05; if (e.hp <= 0 && !e.dead) killEnemy(e); }
 function killEnemy(e) {
   const g = G; e.dead = true; g.kills++; g.score += e.score;
-  boom(e.x, e.y, e.kind === "bomber" ? 9 : e.kind === "ace" ? 6 : 4);
-  sfx(e.kind === "bomber" ? "big" : "boom");
+  const heavy = e.kind === "bomber" || e.kind === "gunship";
+  boom(e.x, e.y, heavy ? 9 : e.kind === "ace" || e.kind === "heli" ? 6 : 4);
+  sfx(heavy ? "big" : "boom");
   dropCoins(e.x, e.y, e.gold, false);
   gainXP(e.xp);
+  if (e.kind === "mine" && g.stage >= 40 && g.state === "play") for (let k = 0; k < 8; k++) eShot(e.x, e.y, k * Math.PI / 4 + 0.2, bulletSpd(g.stage) * 0.5);
   if (e.wave && g.waves[e.wave]) {
     const w = g.waves[e.wave]; w.killed++;
     if (w.killed === w.n) {
@@ -600,50 +685,92 @@ function killEnemy(e) {
       if (Math.random() < (g.p.wl < 2 ? 0.4 : g.p.wl < 4 ? 0.2 : 0.1)) dropItem(e.x, e.y, "P"); else dropCoins(e.x, e.y, 3 + Math.floor(g.stage / 5), false);
     }
   }
-  if (e.kind === "bomber") { dropItem(e.x - 10, e.y, Math.random() < 0.4 ? "P" : "H"); if (Math.random() < 0.4) dropItem(e.x + 10, e.y, "H"); }
-  else if (e.kind === "ace") { if (Math.random() < 0.45) dropItem(e.x, e.y, Math.random() < 0.7 ? "H" : "B"); }
+  if (heavy) { dropItem(e.x - 10, e.y, Math.random() < 0.4 ? "P" : "H"); if (Math.random() < 0.4) dropItem(e.x + 10, e.y, "H"); }
+  else if (e.kind === "ace" || e.kind === "heli") { if (Math.random() < 0.4) dropItem(e.x, e.y, Math.random() < 0.7 ? "H" : "B"); }
   else if (Math.random() < 0.012) dropItem(e.x, e.y, "B");
 }
 
-// ---------- 보스 ----------
-const BOSS_DEF = {
-  0: { w: 96, h: 210, ty: 150, hp: 1.0, gunY: 60, move: "sway", rects: [[-46, -100, 46, 60], [-30, 60, 30, 100]],
-    parts: [[-28, -60, 13, ["aim", 1, 0, 1, 1.6]], [28, -60, 13, ["aim", 1, 0, 1, 1.6]], [-28, -10, 13, ["aim", 3, 0.2, 0.9, 2.4]], [28, -10, 13, ["aim", 3, 0.2, 0.9, 2.4]]] },
-  1: { w: 300, h: 130, ty: 130, hp: 1.15, gunY: 60, move: "sway", rects: [[-150, -16, 150, 16], [-22, -60, 22, 72], [-60, -62, 60, -48]],
-    parts: [[-55, 6, 14, ["fan", 3, 0.5, 0.9, 2.0]], [55, 6, 14, ["fan", 3, 0.5, 0.9, 2.0]], [-110, 6, 13, ["aim", 1, 0, 1, 1.8]], [110, 6, 13, ["aim", 1, 0, 1, 1.8]]] },
-  2: { w: 150, h: 170, ty: 150, hp: 1.3, gunY: 30, move: "slow", rects: [[-76, -82, 76, 82]],
-    parts: [[-36, -48, 14, ["aim", 2, 0.15, 1, 2.0]], [36, -48, 14, ["aim", 2, 0.15, 1, 2.0]], [-60, 62, 12, ["big", 1, 0, 0.6, 2.8]], [60, 62, 12, ["big", 1, 0, 0.6, 2.8]]] },
-  3: { w: 260, h: 130, ty: 130, hp: 1.45, gunY: 40, move: "sway", rects: [[-125, -50, 125, -10], [-60, -10, 60, 40], [-20, 40, 20, 75]],
-    parts: [[-90, -30, 12, ["aim", 1, 0, 1, 1.5]], [90, -30, 12, ["aim", 1, 0, 1, 1.5]], [-45, -30, 12, ["ring", 6, 0.3, 0.7, 2.6]], [45, -30, 12, ["ring", 6, 0.3, 0.7, 2.6]], [-35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]], [35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]]] },
-  4: { w: 70, h: 60, ty: 150, hp: 0.95, gunY: 16, move: "eight", rects: [[-36, -34, 36, 32]],
-    parts: [[-44, 0, 12, ["aim", 1, 0, 1.2, 1.2]], [44, 0, 12, ["aim", 1, 0, 1.2, 1.2]]] },
-  mid: { w: 100, h: 60, ty: 120, hp: 1.0, gunY: 20, move: "sway", rects: [[-48, -10, 48, 6], [-8, -28, 8, 28]],
-    parts: [[-38, -2, 10, ["aim", 1, 0, 1, 1.6]], [38, -2, 10, ["aim", 1, 0, 1, 1.6]]] },
+// ======================================================================
+// 보스 — 매 판 중간 보스, 10판마다 대형 보스, 100·200판 최종 보스
+// ======================================================================
+const MINI = [
+  { id: "m0", name: "중형 폭격기", w: 100, h: 60, ty: 120, hp: 1.0, gunY: 20, move: "sway", rects: [[-48, -10, 48, 6], [-8, -28, 8, 28]],
+    parts: [[-38, -2, 10, ["aim", 1, 0, 1, 1.6]], [38, -2, 10, ["aim", 1, 0, 1, 1.6]]],
+    pat: [[["fan", 7, 1.4, 0.85, 1.9]], [["fan", 7, 1.4, 0.85, 1.7], ["aim", 3, 0.2, 1.0, 1.5]], [["ring", 14, 0.12, 0.7, 1.9], ["aim", 3, 0.2, 1.1, 1.3]]] },
+  { id: "m1", name: "쌍발 건쉽", w: 140, h: 90, ty: 120, hp: 1.1, gunY: 30, move: "sway", rects: [[-70, -10, 70, 10], [-36, -44, -24, 40], [24, -44, 36, 40], [-14, -30, 14, 32]],
+    parts: [[-30, -30, 10, ["aim", 1, 0, 1, 1.8]], [30, -30, 10, ["aim", 1, 0, 1, 1.8]], [-30, 30, 10, ["fan", 3, 0.5, 0.9, 2.2]], [30, 30, 10, ["fan", 3, 0.5, 0.9, 2.2]]],
+    pat: [[["aim", 3, 0.18, 1.0, 1.6]], [["aim", 3, 0.18, 1.0, 1.4], ["fan", 5, 1.0, 0.85, 2.0]], [["spiral", 2, 2.2, 0.7, 0.16], ["aim", 3, 0.18, 1.05, 1.5]]] },
+  { id: "m2", name: "경비 비행선", w: 70, h: 160, ty: 140, hp: 1.2, gunY: 60, move: "slow", rects: [[-32, -78, 32, 78]],
+    parts: [[0, -40, 11, ["ring", 6, 0.3, 0.6, 2.6]], [-22, 15, 10, ["aim", 1, 0, 1, 1.8]], [22, 15, 10, ["aim", 1, 0, 1, 1.8]]],
+    pat: [[["ring", 10, 0.17, 0.65, 2.2]], [["ring", 12, 0.17, 0.65, 2.0], ["aim", 1, 0, 1.1, 1.0]], [["ring", 14, 0.2, 0.7, 1.6], ["fan", 5, 0.9, 0.85, 1.8]]] },
+  { id: "m3", name: "구축함", tankName: "중전차", w: 64, h: 150, ty: 130, hp: 1.1, gunY: 50, move: "sway", ground: true, rects: [[-30, -70, 30, 70]],
+    parts: [[0, -45, 11, ["aim", 2, 0.15, 1, 1.9]], [0, 0, 11, ["fan", 3, 0.6, 0.9, 2.2]], [0, 40, 10, ["aim", 1, 0, 1.1, 1.5]]],
+    pat: [[["fan", 5, 0.8, 0.9, 1.8]], [["fan", 7, 1.0, 0.9, 1.7], ["big", 1, 0, 0.6, 2.4]], [["spray", 1, 0, 0.85, 0.12], ["big", 3, 0.3, 0.6, 2.4]]] },
+  { id: "m4", name: "에이스 편대장", w: 40, h: 36, ty: 140, hp: 0.9, gunY: 12, move: "eight", orbit: true, rects: [[-20, -18, 20, 18]],
+    parts: [[-40, 0, 9, ["aim", 1, 0, 1.2, 1.3]], [40, 0, 9, ["aim", 1, 0, 1.2, 1.3]]],
+    pat: [[["aim", 3, 0.12, 1.2, 1.1]], [["aim", 5, 0.12, 1.2, 1.2]], [["spiral", 2, 3.0, 0.75, 0.13], ["aim", 3, 0.12, 1.25, 1.2]]] },
+  { id: "m5", name: "공중 포대", w: 110, h: 90, ty: 130, hp: 1.2, gunY: 0, move: "slow", rects: [[-50, -40, 50, 40]],
+    parts: [[-35, -25, 10, ["aim", 1, 0, 1, 1.7]], [35, -25, 10, ["aim", 1, 0, 1, 1.7]], [-35, 25, 10, ["aim", 1, 0, 1, 1.7]], [35, 25, 10, ["aim", 1, 0, 1, 1.7]]],
+    pat: [[["ring", 8, 0.2, 0.7, 1.8]], [["spiral", 3, 1.8, 0.65, 0.18]], [["spiral", 3, 1.8, 0.65, 0.16], ["ring", 12, 0.15, 0.7, 2.2]]] },
+];
+const BIG = {
+  K: { name: "철갑 전함 크라켄", w: 96, h: 210, ty: 150, hp: 1.0, gunY: 60, move: "sway", ground: true, rects: [[-46, -100, 46, 60], [-30, 60, 30, 100]],
+    parts: [[-28, -60, 13, ["aim", 1, 0, 1, 1.6]], [28, -60, 13, ["aim", 1, 0, 1, 1.6]], [-28, -10, 13, ["aim", 3, 0.2, 0.9, 2.4]], [28, -10, 13, ["aim", 3, 0.2, 0.9, 2.4]]],
+    pat: [[["ring", 12, 0.13, 0.7, 2.6]], [["ring", 14, 0.13, 0.7, 2.3], ["fan", 7, 1.2, 0.9, 1.9]], [["ring", 16, 0.13, 0.75, 2.1], ["spiral", 2, 2.4, 0.65, 0.16]]] },
+  A: { name: "거대 폭격기 알바트로스", w: 300, h: 130, ty: 130, hp: 1.15, gunY: 60, move: "sway", rects: [[-150, -16, 150, 16], [-22, -60, 22, 72], [-60, -62, 60, -48]],
+    parts: [[-55, 6, 14, ["fan", 3, 0.5, 0.9, 2.0]], [55, 6, 14, ["fan", 3, 0.5, 0.9, 2.0]], [-110, 6, 13, ["aim", 1, 0, 1, 1.8]], [110, 6, 13, ["aim", 1, 0, 1, 1.8]]],
+    pat: [[["aim", 5, 0.16, 1.0, 1.7]], [["aim", 5, 0.16, 1.0, 1.5], ["ring", 14, 0.1, 0.6, 2.5]], [["spiral", 3, -2.2, 0.6, 0.17], ["aim", 3, 0.2, 1.1, 1.4]]] },
+  B: { name: "육상 요새 베헤모스", w: 150, h: 170, ty: 150, hp: 1.3, gunY: 30, move: "slow", ground: true, rects: [[-76, -82, 76, 82]],
+    parts: [[-36, -48, 14, ["aim", 2, 0.15, 1, 2.0]], [36, -48, 14, ["aim", 2, 0.15, 1, 2.0]], [-60, 62, 12, ["big", 1, 0, 0.6, 2.8]], [60, 62, 12, ["big", 1, 0, 0.6, 2.8]]],
+    pat: [[["big", 1, 0, 0.55, 2.0], ["fan", 9, 1.6, 0.8, 2.6]], [["big", 3, 0.35, 0.55, 2.0], ["ring", 16, 0.1, 0.6, 2.6]], [["spray", 1, 0, 0.85, 0.09], ["big", 3, 0.35, 0.6, 2.3]]] },
+  V: { name: "공중 요새 발할라", w: 260, h: 130, ty: 130, hp: 1.45, gunY: 40, move: "sway", rects: [[-125, -50, 125, -10], [-60, -10, 60, 40], [-20, 40, 20, 75]],
+    parts: [[-90, -30, 12, ["aim", 1, 0, 1, 1.5]], [90, -30, 12, ["aim", 1, 0, 1, 1.5]], [-45, -30, 12, ["ring", 6, 0.3, 0.7, 2.6]], [45, -30, 12, ["ring", 6, 0.3, 0.7, 2.6]], [-35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]], [35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]]],
+    pat: [[["fan", 11, 2.0, 0.75, 2.4]], [["spiral", 4, 1.6, 0.6, 0.2], ["aim", 3, 0.2, 1.0, 2.0]], [["spiral", 3, 1.9, 0.65, 0.18], ["spiral", 3, -1.9, 0.65, 0.18], ["aim", 5, 0.15, 1.0, 2.4]]] },
+  S: { name: "뇌운 비행선 스톰브링거", w: 130, h: 230, ty: 150, hp: 1.4, gunY: 70, move: "slow", rects: [[-58, -110, 58, 110]],
+    parts: [[-62, -20, 13, ["aim", 1, 0, 1, 1.5]], [62, -20, 13, ["aim", 1, 0, 1, 1.5]], [0, -70, 12, ["ring", 8, 0.25, 0.65, 2.4]], [-30, 40, 11, ["fan", 3, 0.5, 0.9, 2.0]], [30, 40, 11, ["fan", 3, 0.5, 0.9, 2.0]], [0, 92, 11, ["aim", 3, 0.18, 1, 2.2]]],
+    pat: [[["ring", 16, 0.13, 0.7, 2.4], ["aim", 3, 0.15, 1, 1.8]], [["spiral", 3, 1.9, 0.62, 0.18], ["ring", 12, 0.15, 0.7, 2.4]], [["spiral", 3, 2.1, 0.65, 0.16], ["spiral", 3, -2.1, 0.65, 0.16], ["aim", 5, 0.12, 1.05, 2.2]]] },
+  F1: { name: "천공 요새 아틀라스", final: true, w: 260, h: 220, ty: 140, hp: 2.5, gunY: 0, move: "slow", rects: [[-120, -80, 120, 80], [-60, -110, 60, 110]],
+    parts: [0, 1, 2, 3, 4, 5, 6, 7].map(i => [Math.round(Math.cos(i * Math.PI / 4) * 95), Math.round(Math.sin(i * Math.PI / 4) * 75), 12, i % 2 ? ["aim", 1, 0, 1.05, 1.6] : ["ring", 6, 0.3, 0.65, 2.6]]),
+    pat: [[["ring", 16, 0.13, 0.7, 2.0], ["aim", 3, 0.15, 1.0, 1.6]], [["spiral", 4, 1.5, 0.6, 0.2], ["aim", 5, 0.12, 1.0, 1.8]],
+      [["spiral", 3, 2.2, 0.65, 0.17], ["spiral", 3, -2.2, 0.65, 0.17], ["big", 3, 0.4, 0.55, 2.4]], [["ring", 20, 0.11, 0.75, 1.5], ["spiral", 4, 2.6, 0.7, 0.16], ["aim", 5, 0.1, 1.2, 1.4]]] },
+  F2: { name: "흑룡 네메시스 Ω", final: true, w: 200, h: 90, ty: 150, hp: 1.4, gunY: 20, move: "eight", rects: [[-44, -38, 44, 38], [-100, -12, 100, 10]],
+    parts: [[-80, -2, 11, ["aim", 1, 0, 1.25, 1.1]], [80, -2, 11, ["aim", 1, 0, 1.25, 1.1]], [-50, 26, 10, ["fan", 3, 0.5, 1.0, 1.8]], [50, 26, 10, ["fan", 3, 0.5, 1.0, 1.8]]],
+    pat: [[["aim", 5, 0.1, 1.3, 1.0], ["ring", 12, 0.2, 0.7, 2.4]], [["spiral", 4, 3.0, 0.75, 0.13], ["aim", 3, 0.12, 1.4, 1.0]],
+      [["spiral", 3, 2.4, 0.7, 0.13], ["spiral", 3, -2.4, 0.7, 0.13], ["big", 3, 0.35, 0.65, 2.0]], [["ring", 22, 0.1, 0.8, 1.3], ["spiral", 4, 3.4, 0.8, 0.13], ["aim", 5, 0.1, 1.45, 1.1]]] },
 };
-const BOSS_PAT = {
-  0: [[["ring", 12, 0.13, 0.7, 2.6]], [["ring", 14, 0.13, 0.7, 2.3], ["fan", 7, 1.2, 0.9, 1.9]], [["ring", 16, 0.13, 0.75, 2.1], ["spiral", 2, 2.4, 0.65, 0.16]]],
-  1: [[["aim", 5, 0.16, 1.0, 1.7]], [["aim", 5, 0.16, 1.0, 1.5], ["ring", 14, 0.1, 0.6, 2.5]], [["spiral", 3, -2.2, 0.6, 0.17], ["aim", 3, 0.2, 1.1, 1.4]]],
-  2: [[["big", 1, 0, 0.55, 2.0], ["fan", 9, 1.6, 0.8, 2.6]], [["big", 3, 0.35, 0.55, 2.0], ["ring", 16, 0.1, 0.6, 2.6]], [["spray", 1, 0, 0.85, 0.09], ["big", 3, 0.35, 0.6, 2.3]]],
-  3: [[["fan", 11, 2.0, 0.75, 2.4]], [["spiral", 4, 1.6, 0.6, 0.2], ["aim", 3, 0.2, 1.0, 2.0]], [["spiral", 3, 1.9, 0.65, 0.18], ["spiral", 3, -1.9, 0.65, 0.18], ["aim", 5, 0.15, 1.0, 2.4]]],
-  4: [[["aim", 3, 0.12, 1.25, 0.95]], [["spiral", 3, 3.0, 0.75, 0.12], ["aim", 1, 0, 1.4, 0.8]], [["ring", 18, 0.15, 0.8, 1.5], ["spiral", 2, -3.2, 0.8, 0.11], ["aim", 3, 0.14, 1.35, 1.1]]],
-  mid: [[["fan", 7, 1.4, 0.85, 1.9]], [["fan", 7, 1.4, 0.85, 1.7], ["aim", 3, 0.2, 1.0, 1.5]], [["ring", 14, 0.12, 0.7, 1.9], ["aim", 3, 0.2, 1.1, 1.3]]],
-};
-function spawnBoss(mid) {
-  const g = G, kind = mid ? "mid" : g.world, def = BOSS_DEF[kind];
-  const hp = (mid ? 5500 : 13000) * hpScale(g.stage) * def.hp;
-  g.boss = { kind, def, name: mid ? "중형 폭격기" : BOSS_NAMES[g.world], x: W / 2, y: -def.h / 2 - 30, t: 0, t0: 0,
-    hp, maxhp: hp, phase: 0, enter: true, tm: {}, rot: 0, flash: 0, dead: false, deadT: 0,
-    parts: def.parts.map(q => ({ dx: q[0], dy: q[1], r: q[2], spec: q[3], hp: hp * 0.07, maxhp: hp * 0.07, alive: true, tm: {}, rot: 0, flash: 0 })) };
+const BIG_SEQ = ["K", "A", "V", "K", "B", "A", "V", "B", "S", "F1", "B", "S", "A", "V", "K", "S", "B", "V", "A", "F2"];
+const GEN = ["", " Mk-II", " Mk-III", " Mk-IV"];
+function bossInfo(s) {
+  if (s % 10 === 0) {
+    const T = s / 10, kind = BIG_SEQ[T - 1], def = BIG[kind], gen = BIG_SEQ.slice(0, T).filter(k => k === kind).length;
+    return { big: true, kind, def, gen, T, name: def.name + GEN[gen - 1] };
+  }
+  const def = MINI[(s % 10 + regionIdx(s)) % 6];
+  const gr = REGIONS[regionIdx(s)].ground;
+  return { big: false, kind: def.id, def, gen: 1, T: 0, name: def.tankName ? (gr === "tank" ? def.tankName : gr ? def.name : "공중 순양함") : def.name };
+}
+function spawnBoss() {
+  const g = G, s = g.stage, bi = bossInfo(s), def = bi.def, final = !!def.final;
+  const hp = (bi.big ? 13000 * (1 + 0.04 * bi.T) / (1 + 0.012 * (s - 10)) : 2600) * hpScale(s) * def.hp;
+  const extra = [];
+  if (bi.big && bi.gen >= 2) extra.push(["aim", 3, 0.15, 1.1, 2.0]);
+  if (bi.big && bi.gen >= 3) extra.push(["ring", 10, 0.2, 0.7, 2.6]);
+  g.boss = { kind: bi.kind, def, big: bi.big, final, name: bi.name, x: W / 2, y: -def.h / 2 - 30, t: 0, t0: 0,
+    hp, maxhp: hp, phase: 0, enter: true, tm: {}, rot: 0, flash: 0, dead: false, deadT: 0, sumT: 8,
+    nPlus: Math.floor(s / 50), rateMul: 1 + Math.min(0.35, s * 0.002), extra,
+    parts: def.parts.map(q => ({ dx: q[0], dy: q[1], r: q[2], spec: q[3], hp: hp * (final ? 0.035 : 0.07), maxhp: hp * (final ? 0.035 : 0.07), alive: true, tm: {}, rot: 0, flash: 0 })) };
   g.bossStart = g.t;
-  g.banner = { text: "WARNING!!", sub: g.boss.name + " 접근", t: 3, warn: true }; sfx("warn"); vibrate(120);
+  g.banner = final ? { text: "!! FINAL BOSS !!", sub: bi.name, t: 3.5, warn: true }
+    : bi.big ? { text: "WARNING!!", sub: bi.name + " 접근", t: 3, warn: true } : { text: "BOSS", sub: bi.name, t: 2 };
+  if (bi.big) { sfx("warn"); vibrate(120); }
 }
 function updBoss(b, dt) {
-  const g = G, d = b.def; b.t += dt; b.flash = Math.max(0, b.flash - dt);
-  for (const q of b.parts) q.flash = Math.max(0, q.flash - dt);
+  const g = G, d = b.def; b.t += dt; if (b.flash > 0) b.flash -= dt;
+  for (const q of b.parts) if (q.flash > 0) q.flash -= dt;
   if (b.dead) {
     b.deadT += dt;
-    if (Math.random() < dt * 14) { const r = d.rects[Math.floor(Math.random() * d.rects.length)]; boom(b.x + rnd(r[0], r[2]), b.y + rnd(r[1], r[3]), 6); sfx("boom"); }
-    if (b.deadT > 2.2) { boom(b.x, b.y, 16); sfx("big"); g.shake = 0.8; g.boss = null; startClear(); }
+    if (Math.random() < dt * (SV.saver ? 8 : 14)) { const r = d.rects[Math.floor(Math.random() * d.rects.length)]; boom(b.x + rnd(r[0], r[2]), b.y + rnd(r[1], r[3]), 6); sfx("boom"); }
+    if (b.deadT > (b.final ? 3.2 : 2.2)) { boom(b.x, b.y, 16); sfx("big"); g.shake = 0.8; g.boss = null; startClear(); }
     return;
   }
   if (b.enter) { b.y += (d.ty - b.y) * Math.min(1, dt * 0.9); if (b.t > 3.2) { b.enter = false; b.t0 = b.t; } return; }
@@ -651,20 +778,32 @@ function updBoss(b, dt) {
   const A = Math.min(110, Math.max(20, (W - d.w) / 2 + 40));
   if (d.move === "sway") { tx = W / 2 + A * Math.sin(tt * 0.5); ty = d.ty + 10 * Math.sin(tt * 0.8); }
   else if (d.move === "slow") tx = W / 2 + A * 0.7 * Math.sin(tt * 0.35);
-  else { const k = b.phase === 2 ? 1.3 : 1; tx = W / 2 + 115 * Math.sin(tt * 0.9 * k); ty = d.ty + 55 * Math.sin(tt * 1.8 * k); }
+  else { const k = b.phase >= 2 ? 1.3 : 1, amp = Math.min(115, (W - d.w) / 2 + 60); tx = W / 2 + amp * Math.sin(tt * 0.9 * k); ty = d.ty + 55 * Math.sin(tt * 1.8 * k); }
   b.x += (tx - b.x) * Math.min(1, dt * 3); b.y += (ty - b.y) * Math.min(1, dt * 3);
-  const r = b.hp / b.maxhp, ph = r > 0.66 ? 0 : r > 0.33 ? 1 : 2;
-  if (ph !== b.phase) { b.phase = ph; b.tm = {}; g.flash = 0.12; floatText(b.x, b.y, ph === 1 ? "분노!" : "최후의 발악!", "#ff8a80", 1.4); }
+  if (d.orbit) b.parts.forEach((q, i) => { q.dx = Math.cos(tt * 2.2 + i * Math.PI) * 42; q.dy = Math.sin(tt * 2.2 + i * Math.PI) * 22; });
+  const np = d.pat.length, r = b.hp / b.maxhp, ph = Math.min(np - 1, Math.floor((1 - r) * np));
+  if (ph !== b.phase) { b.phase = ph; b.tm = {}; g.flash = 0.12; floatText(b.x, b.y, ph === np - 1 ? "최후의 발악!" : "분노!", "#ff8a80", 1.4); }
   if (g.state !== "play" || g.p.dead) return;
-  const f = 1 + g.stage * 0.012;
-  BOSS_PAT[b.kind][b.phase].forEach((sp, i) => fireSpec(sp, b.x, b.y + d.gunY, b, i, dt, f));
-  for (const q of b.parts) if (q.alive) fireSpec(q.spec, b.x + q.dx, b.y + q.dy, q, 0, dt, f);
+  if (b.final && b.phase >= 1) {
+    b.sumT -= dt;
+    if (b.sumT <= 0) {
+      b.sumT = 9;
+      if (b.kind === "F1") spawnWave({ type: "vee", seed: Math.floor(Math.random() * 1e9) });
+      else { addE({ kind: "ace", x: 40, y: -20 }); addE({ kind: "ace", x: W - 40, y: -20 }); }
+    }
+  }
+  const f = bossF(g.stage) * b.rateMul, specs = d.pat[b.phase];
+  for (let i = 0; i < specs.length; i++) fireSpec(specs[i], b.x, b.y + d.gunY, b, i, dt, f, b.nPlus);
+  for (let i = 0; i < b.extra.length; i++) fireSpec(b.extra[i], b.x, b.y + d.gunY, b, 10 + i, dt, f, b.nPlus);
+  for (const q of b.parts) if (q.alive) fireSpec(q.spec, b.x + q.dx, b.y + q.dy, q, 0, dt, f, 0);
 }
-function fireSpec(sp, x, y, o, key, dt, f) {
-  o.tm[key] = (o.tm[key] === undefined ? 0.8 + key * 0.37 : o.tm[key]) - dt;
+function fireSpec(sp, x, y, o, key, dt, f, nPlus) {
+  o.tm[key] = (o.tm[key] === undefined ? 0.8 + (key % 10) * 0.37 : o.tm[key]) - dt;
   if (o.tm[key] > 0) return;
   o.tm[key] += sp[4] / f;
-  const nm = sp[0], n = sp[1], p = sp[2], v = bulletSpd(G.stage) * sp[3];
+  const nm = sp[0], p = sp[2], v = bulletSpd(G.stage) * sp[3];
+  let n = sp[1];
+  if (n > 1 && nm !== "spiral") n += nm === "ring" ? nPlus * 2 : nPlus;
   const aim = Math.atan2(G.p.y - y, G.p.x - x);
   if (nm === "aim") for (let k = 0; k < n; k++) eShot(x, y, aim + (k - (n - 1) / 2) * p, v);
   else if (nm === "fan") fan(x, y, n, p, v);
@@ -697,13 +836,13 @@ function damageBoss(b, d) {
   if (b.dead) return;
   b.hp -= d; b.flash = 0.04;
   if (b.hp <= 0) {
-    const g = G; b.hp = 0; b.dead = true; b.deadT = 0; g.eb = []; g.bossT = g.t - g.bossStart;
+    const g = G, s = g.stage; b.hp = 0; b.dead = true; b.deadT = 0; g.eb.length = 0; g.bossT = g.t - g.bossStart;
     for (const q of b.parts) q.alive = false;
-    const gold = (b.kind === "mid" ? 60 : 150) * (1 + g.world) + g.stage * 6;
+    const gold = (b.big ? 150 + s * 9 : 30 + s * 3) * (b.final ? 3 : 1);
     dropCoins(b.x, b.y, gold, true);
-    gainXP(b.kind === "mid" ? 80 + g.stage * 4 : 200 + g.stage * 8);
-    g.score += b.kind === "mid" ? 20000 : 50000 * (g.world + 1); g.kills++;
-    dropItem(b.x, b.y, "P"); dropItem(b.x + 16, b.y, "H");
+    gainXP((b.big ? 200 + s * 8 : 40 + s * 2) * (b.final ? 2 : 1));
+    g.score += (b.big ? 50000 : 8000) + s * 500; g.kills++;
+    if (b.big) { dropItem(b.x, b.y, "P"); dropItem(b.x + 16, b.y, "H"); } else if (Math.random() < 0.35) dropItem(b.x, b.y, Math.random() < 0.5 ? "P" : "H");
     for (const it of g.items) it.mag = true;
   }
 }
@@ -711,7 +850,8 @@ function damageBoss(b, d) {
 // ---------- 아이템 ----------
 function dropCoins(x, y, total, mag) {
   total = Math.max(1, Math.round(total));
-  const n = Math.min(mag ? 14 : 5, total), per = Math.floor(total / n);
+  if (G.items.length > 70) { const c = G.items.find(it => it.kind === "coin"); if (c) { c.v += total; if (mag) c.mag = true; return; } }
+  const n = Math.min(mag ? 10 : 3, total), per = Math.floor(total / n);
   for (let i = 0; i < n; i++) {
     G.items.push({ kind: "coin", v: per + (i === 0 ? total - per * n : 0), x: x + rnd(-8, 8), y: y + rnd(-8, 8),
       vx: rnd(-60, 60), vy: rnd(-130, -40), t: Math.random(), mag });
@@ -732,7 +872,7 @@ function updItems(dt) {
     }
     if (!p.dead && d < 16) { it.dead = true; pick(it); }
   }
-  G.items = G.items.filter(it => !it.dead && it.y < H + 20);
+  compact(G.items, it => !it.dead && it.y < H + 20);
 }
 function pick(it) {
   const p = G.p;
@@ -774,21 +914,21 @@ function collide() {
 // ---------- 효과 ----------
 const BOOMC = ["#fff3b0", "#ffd54f", "#ffb347", "#ff6b3d", "#9e9e9e"];
 function boom(x, y, size) {
-  const g = G, n = Math.min(30, 6 + size * 2);
+  const g = G, n = Math.min(30, 6 + size * 2) >> (SV.saver ? 1 : 0);
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, sp = rnd(30, 60 + size * 14);
     g.fx.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, t: 0, life: rnd(0.3, 0.7), c: BOOMC[Math.floor(Math.random() * BOOMC.length)], s: rnd(2, 2 + size * 0.5) });
   }
   g.fx.push({ ring: true, x, y, t: 0, life: 0.35, max: 8 + size * 5 });
-  if (g.fx.length > 700) g.fx.splice(0, g.fx.length - 700);
+  if (g.fx.length > 300) g.fx.splice(0, g.fx.length - 300);
 }
 function updFx(dt) {
   for (const f of G.fx) { f.t += dt; if (!f.ring) { f.x += f.vx * dt; f.y += f.vy * dt; f.vx *= 0.94; f.vy *= 0.94; } }
-  G.fx = G.fx.filter(f => f.t < f.life);
+  compact(G.fx, f => f.t < f.life);
   for (const t of G.texts) { t.t += dt; t.y -= 28 * dt; }
-  G.texts = G.texts.filter(t => t.t < t.life);
+  compact(G.texts, t => t.t < t.life);
 }
-function floatText(x, y, s, c, life) { if (G) G.texts.push({ x: clamp(x, 50, W - 50), y, s, c, t: 0, life: life || 1 }); }
+function floatText(x, y, s, c, life) { if (G && G.texts.length < 12) G.texts.push({ x: clamp(x, 50, W - 50), y, s, c, t: 0, life: life || 1 }); }
 
 // ---------- 테스트용 자동 조종 ----------
 function botMove(dt) {
@@ -803,7 +943,7 @@ function botMove(dt) {
     const rx = p.x - b.x, ry = p.y - b.y, d2 = rx * rx + ry * ry;
     if (d2 > 100 * 100) continue;
     if (b.vx * rx + b.vy * ry < 0) continue;
-    near++; const d = Math.sqrt(d2) + 1, k = 9000 / (d * d) * G.skill;
+    near++; const d = Math.sqrt(d2) + 1, k = 9000 / (d * d) * g.skill;
     fx += rx / d * k * 30; fy += ry / d * k * 10;
   }
   for (const e of g.en) {
@@ -812,7 +952,7 @@ function botMove(dt) {
     if (d < 60) { fx += rx / d * 4000 / d; fy += ry / d * 4000 / d; }
   }
   if (!g.god && p.bombs > 0 && p.hp < maxHP() * 0.35 && near >= 5) useBomb();
-  const sp = 120 + 180 * G.skill, m = Math.hypot(fx, fy);
+  const sp = 120 + 180 * g.skill, m = Math.hypot(fx, fy);
   if (m > sp) { fx = fx / m * sp; fy = fy / m * sp; }
   return [fx * dt, fy * dt];
 }
@@ -871,17 +1011,16 @@ function drawGame() {
   if (g.shake > 0 && scene === "play") ctx.translate(rnd(-1, 1) * g.shake * 10, rnd(-1, 1) * g.shake * 10);
   drawBgBase();
   for (const e of g.en) if (e.ground) drawGround(e);
-  const groundBoss = g.boss && (g.boss.kind === 0 || g.boss.kind === 2);
+  const groundBoss = g.boss && g.boss.def.ground;
   if (groundBoss) drawBoss(g.boss);
   drawClouds();
   if (g.boss && !groundBoss) drawBoss(g.boss);
-  const sp = spr(g.world);
+  const sp = spr(g.reg);
   for (const e of g.en) if (!e.ground) drawEnemy(e, sp);
   for (const it of g.items) drawItem(it);
-  for (const b of g.pb) {
-    if (b.mis) { ctx.fillStyle = "#ffffff"; ctx.fillRect(b.x - 1.5, b.y - 4, 3, 8); ctx.fillStyle = "#ff9800"; ctx.fillRect(b.x - 1, b.y + 4, 2, 4); }
-    else { ctx.fillStyle = "#fff59d"; ctx.fillRect(b.x - 1.5, b.y - 5, 3, 10); }
-  }
+  ctx.fillStyle = "#fff59d";
+  for (const b of g.pb) if (!b.mis) ctx.fillRect(b.x - 1.5, b.y - 5, 3, 10);
+  for (const b of g.pb) if (b.mis) { ctx.fillStyle = "#ffffff"; ctx.fillRect(b.x - 1.5, b.y - 4, 3, 8); ctx.fillStyle = "#ff9800"; ctx.fillRect(b.x - 1, b.y + 4, 2, 4); }
   drawPlayer();
   for (const b of g.eb) { const im = b.big ? BUL.big : BUL.n; ctx.drawImage(im, b.x - im.width / 2, b.y - im.height / 2); }
   for (const f of g.fx) {
@@ -899,7 +1038,7 @@ function drawGame() {
   drawHUD();
 }
 function drawGround(e) {
-  const tank = G.world === 2 || G.world === 3;
+  const tank = REGIONS[G.reg].ground === "tank";
   ctx.save(); ctx.translate(e.x, e.y);
   if (tank) {
     ctx.fillStyle = "#3b3b2f"; ctx.fillRect(-12, -12, 5, 24); ctx.fillRect(7, -12, 5, 24);
@@ -914,14 +1053,33 @@ function drawGround(e) {
   ctx.restore();
 }
 function drawEnemy(e, sp) {
-  const base = e.kind === "ace" ? "ace" : e.kind === "bomber" ? "bomber" : "fighter";
-  const im = sp[base + (e.flash > 0 ? "W" : "")], sh = sp[base + "S"];
-  const a = (e.kind === "side" || (e.kind === "diver" && e.go)) ? Math.atan2(e.vy, e.vx) - Math.PI / 2 : 0;
+  if (e.kind === "heli") {
+    ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(e.x + 8, e.y + 14, 8, 12, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = e.flash > 0 ? "#ffffff" : REGIONS[G.reg].bomber; ctx.beginPath(); ctx.ellipse(e.x, e.y, 8, 12, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillRect(e.x - 1.5, e.y - 24, 3, 14); ctx.fillStyle = "#8fd3ff"; ctx.fillRect(e.x - 4, e.y + 4, 8, 5);
+    const a = e.t * 20; ctx.strokeStyle = "rgba(30,30,30,0.8)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(e.x - Math.cos(a) * 18, e.y - Math.sin(a) * 18); ctx.lineTo(e.x + Math.cos(a) * 18, e.y + Math.sin(a) * 18);
+    ctx.moveTo(e.x + Math.sin(a) * 18, e.y - Math.cos(a) * 18); ctx.lineTo(e.x - Math.sin(a) * 18, e.y + Math.cos(a) * 18); ctx.stroke();
+    if (e.hp < e.maxhp) bar(e.x - 14, e.y - 22, 28, 3, e.hp / e.maxhp, "#ff5252");
+    return;
+  }
+  if (e.kind === "mine") {
+    ctx.fillStyle = e.flash > 0 ? "#ffffff" : "#3c3f44";
+    for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4 + e.t; ctx.fillRect(e.x + Math.cos(a) * 10 - 2, e.y + Math.sin(a) * 10 - 2, 4, 4); }
+    circle(e.x, e.y, 8); ctx.fillStyle = Math.floor(e.t * 4) % 2 ? "#ff1744" : "#7f0000"; circle(e.x, e.y, 3);
+    return;
+  }
+  const base = e.kind === "ace" ? "ace" : e.kind === "bomber" || e.kind === "gunship" ? "bomber" : "fighter";
+  const fl = e.flash > 0 && Math.floor(e.t * 20) % 2 === 0;
+  let im = sp[base + (fl ? "W" : "")], sh = sp[base + "S"];
+  if (e.kind === "kami") { im = fl ? PL.kamiW : PL.kami; sh = PL.kamiS; }
+  const rot = e.kind === "side" || e.kind === "kami" || e.kind === "gunship" || (e.kind === "diver" && e.go);
+  const a = rot && (e.vx || e.vy) ? Math.atan2(e.vy, e.vx) - Math.PI / 2 : 0;
   ctx.save(); ctx.translate(e.x, e.y); if (a) ctx.rotate(a);
   ctx.drawImage(sh, -im.width / 2 + 8, -im.height / 2 + 12);
   ctx.drawImage(im, -im.width / 2, -im.height / 2);
   ctx.restore();
-  if ((e.kind === "bomber" || e.kind === "ace") && e.hp < e.maxhp) bar(e.x - 16, e.y - e.r - 7, 32, 3, e.hp / e.maxhp, "#ff5252");
+  if ((e.kind === "bomber" || e.kind === "ace" || e.kind === "gunship") && e.hp < e.maxhp) bar(e.x - 16, e.y - e.r - 7, 32, 3, e.hp / e.maxhp, "#ff5252");
 }
 function drawPlayer() {
   const p = G.p; if (p.dead) return;
@@ -934,69 +1092,107 @@ function drawPlayer() {
   ctx.strokeStyle = "#d32f2f"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(p.x, p.y + 1, 3, 0, Math.PI * 2); ctx.stroke();
 }
 function drawItem(it) {
-  if (it.kind === "coin") {
-    const w = Math.abs(Math.cos(it.t * 6)) * 5 + 1;
-    ctx.fillStyle = "#8d6e00"; ctx.beginPath(); ctx.ellipse(it.x + 0.6, it.y + 0.6, w + 1, 6.2, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#ffd54f"; ctx.beginPath(); ctx.ellipse(it.x, it.y, w, 5.5, 0, 0, Math.PI * 2); ctx.fill();
-    return;
-  }
+  if (it.kind === "coin") { ctx.drawImage(COINF[Math.floor(it.t * 12) % 6], it.x - 8, it.y - 8); return; }
   const col = { P: ["#e53935", "#ff8a80"], H: ["#2e7d32", "#69f0ae"], B: ["#ef6c00", "#ffcc80"] }[it.kind];
-  ctx.fillStyle = "#111111"; rr(it.x - 11, it.y - 11, 22, 22, 5); ctx.fill();
-  ctx.fillStyle = col[Math.floor(it.t * 6) % 2]; rr(it.x - 9, it.y - 9, 18, 18, 4); ctx.fill();
+  ctx.fillStyle = "#111111"; ctx.fillRect(it.x - 11, it.y - 11, 22, 22);
+  ctx.fillStyle = col[Math.floor(it.t * 6) % 2]; ctx.fillRect(it.x - 9, it.y - 9, 18, 18);
   txt(it.kind === "H" ? "+" : it.kind, it.x, it.y + 1, 14, "#ffffff", "center", true, MONO);
 }
 function drawBoss(b) {
-  const d = b.def;
+  const d = b.def, hull = REGIONS[G.reg].hull, t = b.t, fl = b.flash > 0 && Math.floor(t * 20) % 2 === 0;
   ctx.save(); ctx.translate(b.x, b.y);
   switch (b.kind) {
-    case 0:
+    case "K":
       ctx.fillStyle = "rgba(255,255,255,0.3)"; ctx.fillRect(-50, -104, 100, 4);
-      poly([[0, 104], [46, 60], [48, -80], [36, -100], [-36, -100], [-48, -80], [-46, 60]], "#5f6b78");
-      poly([[0, 90], [36, 55], [38, -76], [28, -90], [-28, -90], [-38, -76], [-36, 55]], "#8a96a3");
-      ctx.fillStyle = "#4b5560"; ctx.fillRect(-14, 18, 28, 46);
-      ctx.fillStyle = "#39424c"; ctx.fillRect(-9, 26, 18, 18);
+      poly([[0, 104], [46, 60], [48, -80], [36, -100], [-36, -100], [-48, -80], [-46, 60]], hull[0]);
+      poly([[0, 90], [36, 55], [38, -76], [28, -90], [-28, -90], [-38, -76], [-36, 55]], hull[1]);
+      ctx.fillStyle = "#4b5560"; ctx.fillRect(-14, 18, 28, 46); ctx.fillStyle = "#39424c"; ctx.fillRect(-9, 26, 18, 18);
       ctx.fillStyle = "#2a2f36"; circle(0, 75, 8);
       break;
-    case 1:
-      ctx.fillStyle = "#3d4a33"; ctx.fillRect(-150, -16, 300, 32);
-      ctx.fillStyle = "#56664a"; ctx.fillRect(-150, -16, 300, 8);
-      ctx.fillStyle = "#3d4a33"; ctx.fillRect(-60, -62, 120, 14);
-      ctx.fillStyle = "#4a5a3e"; rr(-22, -62, 44, 134, 16); ctx.fill();
+    case "A":
+      ctx.fillStyle = hull[0]; ctx.fillRect(-150, -16, 300, 32);
+      ctx.fillStyle = hull[1]; ctx.fillRect(-150, -16, 300, 8);
+      ctx.fillStyle = hull[0]; ctx.fillRect(-60, -62, 120, 14);
+      ctx.fillStyle = hull[1]; rr(-22, -62, 44, 134, 16); ctx.fill();
       ctx.fillStyle = "#8fd3ff"; ctx.fillRect(-8, 52, 16, 10);
       break;
-    case 2: {
+    case "B": {
       ctx.fillStyle = "#3a3324"; ctx.fillRect(-76, -82, 26, 164); ctx.fillRect(50, -82, 26, 164);
-      ctx.fillStyle = "#231e14"; const o = (b.t * 30) % 10;
+      ctx.fillStyle = "#231e14"; const o = (t * 30) % 10;
       for (let y = -82; y < 78; y += 10) { ctx.fillRect(-76, y + o, 26, 3); ctx.fillRect(50, y + o, 26, 3); }
-      ctx.fillStyle = "#8a7a4a"; ctx.fillRect(-50, -74, 100, 148);
-      ctx.fillStyle = "#a8955c"; ctx.fillRect(-50, -74, 100, 10);
-      ctx.fillStyle = "#6e6038"; circle(0, 30, 28);
+      ctx.fillStyle = hull[0]; ctx.fillRect(-50, -74, 100, 148);
+      ctx.fillStyle = hull[1]; ctx.fillRect(-50, -74, 100, 10);
+      ctx.fillStyle = "#4a4030"; circle(0, 30, 28);
       const a = Math.atan2(G.p.y - (b.y + 30), G.p.x - b.x);
-      ctx.save(); ctx.translate(0, 30); ctx.rotate(a); ctx.fillStyle = "#3f3620"; ctx.fillRect(0, -6, 56, 12); ctx.restore();
-      ctx.fillStyle = "#57492a"; circle(0, 30, 14);
+      ctx.save(); ctx.translate(0, 30); ctx.rotate(a); ctx.fillStyle = "#2a2418"; ctx.fillRect(0, -6, 56, 12); ctx.restore();
+      ctx.fillStyle = "#3a3324"; circle(0, 30, 14);
       break;
     }
-    case 3:
-      poly([[0, 78], [130, -18], [118, -50], [-118, -50], [-130, -18]], "#4f5a68");
-      poly([[0, 60], [100, -20], [90, -40], [-90, -40], [-100, -20]], "#6f7c8c");
+    case "V":
+      poly([[0, 78], [130, -18], [118, -50], [-118, -50], [-130, -18]], hull[0]);
+      poly([[0, 60], [100, -20], [90, -40], [-90, -40], [-100, -20]], hull[1]);
       ctx.fillStyle = "#2f3742"; circle(0, 40, 20);
-      ctx.fillStyle = "rgba(255,82,82," + (0.6 + 0.4 * Math.sin(b.t * 6)) + ")"; circle(0, 40, 9);
+      ctx.fillStyle = "rgba(255,82,82," + (0.6 + 0.4 * Math.sin(t * 6)) + ")"; circle(0, 40, 9);
       break;
-    case 4: {
-      const im = b.flash > 0 ? PL.nemW : PL.nem;
-      ctx.strokeStyle = "rgba(255,60,60," + (0.35 + 0.3 * Math.sin(b.t * 6)) + ")"; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(0, 0, 44, 0, Math.PI * 2); ctx.stroke();
-      ctx.drawImage(im, -im.width / 2, -im.height / 2);
+    case "S":
+      ctx.fillStyle = hull[0]; ctx.beginPath(); ctx.ellipse(0, 0, 58, 112, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = hull[1]; ctx.beginPath(); ctx.ellipse(-8, -6, 40, 96, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#2b2e3a"; ctx.fillRect(-70, -32, 24, 28); ctx.fillRect(46, -32, 24, 28); ctx.fillRect(-14, 20, 28, 56);
+      poly([[0, -100], [30, -125], [-30, -125]], "#2b2e3a");
+      ctx.strokeStyle = "rgba(160,200,255," + (0.3 + 0.3 * Math.sin(t * 9)) + ")"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(-50, -60); ctx.lineTo(-30, -40); ctx.lineTo(-44, -20); ctx.moveTo(50, 30); ctx.lineTo(32, 50); ctx.lineTo(44, 70); ctx.stroke();
+      break;
+    case "F1": {
+      const pts = []; for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4 + Math.PI / 8; pts.push([Math.cos(a) * 128, Math.sin(a) * 100]); }
+      poly(pts, "#3a3f55"); poly(pts.map(q => [q[0] * 0.8, q[1] * 0.8]), "#5a6080");
+      ctx.strokeStyle = "#ffd54f"; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(0, 0, 70, 54, t * 0.5, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = "#1c1f2c"; circle(0, 0, 34);
+      ctx.fillStyle = "rgba(124,255,255," + (0.55 + 0.4 * Math.sin(t * 5)) + ")"; circle(0, 0, 16);
       break;
     }
-    default: {
-      const sp = spr(G.world), im = b.flash > 0 ? sp.midW : sp.mid;
-      ctx.drawImage(im, -im.width / 2, -im.height / 2);
+    case "F2": {
+      poly([[-40, -10], [-104, -30], [-120, 4], [-86, 0], [-96, 22], [-40, 12]], "#1a0f1a");
+      poly([[40, -10], [104, -30], [120, 4], [86, 0], [96, 22], [40, 12]], "#1a0f1a");
+      ctx.strokeStyle = "rgba(255,40,40," + (0.35 + 0.35 * Math.sin(t * 7)) + ")"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, 58 + Math.sin(t * 3) * 4, 0, Math.PI * 2); ctx.stroke();
+      const im = fl ? PL.omegaW : PL.omega; ctx.drawImage(im, -im.width / 2, -im.height / 2);
+      break;
+    }
+    case "m0": { const sp = spr(G.reg), im = fl ? sp.midW : sp.mid; ctx.drawImage(im, -im.width / 2, -im.height / 2); break; }
+    case "m1":
+      ctx.fillStyle = hull[0]; ctx.fillRect(-70, -10, 140, 20); ctx.fillRect(-36, -44, 12, 84); ctx.fillRect(24, -44, 12, 84);
+      ctx.fillRect(-46, -46, 92, 8); ctx.fillStyle = hull[1]; rr(-14, -30, 28, 62, 10); ctx.fill();
+      ctx.fillStyle = "#8fd3ff"; ctx.fillRect(-6, 20, 12, 8);
+      break;
+    case "m2":
+      ctx.fillStyle = hull[0]; ctx.beginPath(); ctx.ellipse(0, 0, 32, 78, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = hull[1]; ctx.beginPath(); ctx.ellipse(-6, -4, 20, 64, 0, 0, Math.PI * 2); ctx.fill();
+      poly([[0, -70], [22, -88], [-22, -88]], "#2b2e3a"); ctx.fillStyle = "#2b2e3a"; ctx.fillRect(-8, 30, 16, 26);
+      break;
+    case "m3":
+      if (REGIONS[G.reg].ground !== "tank") {
+        poly([[0, 74], [30, 40], [30, -60], [-30, -60], [-30, 40]], hull[0]);
+        poly([[0, 62], [22, 34], [22, -52], [-22, -52], [-22, 34]], hull[1]);
+      } else {
+        ctx.fillStyle = "#2a2418"; ctx.fillRect(-34, -70, 14, 140); ctx.fillRect(20, -70, 14, 140);
+        ctx.fillStyle = hull[0]; ctx.fillRect(-22, -64, 44, 128); ctx.fillStyle = hull[1]; ctx.fillRect(-22, -64, 44, 8);
+      }
+      break;
+    case "m4": {
+      ctx.strokeStyle = "rgba(255,213,79,0.5)"; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(0, 0, 42, 22, 0, 0, Math.PI * 2); ctx.stroke();
+      const im = fl ? PL.leadW : PL.lead; ctx.drawImage(im, -im.width / 2, -im.height / 2);
+      break;
+    }
+    case "m5": {
+      const pts = []; for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4 + Math.PI / 8; pts.push([Math.cos(a) * 54, Math.sin(a) * 44]); }
+      poly(pts, hull[0]); poly(pts.map(q => [q[0] * 0.75, q[1] * 0.75]), hull[1]);
+      ctx.fillStyle = "#2a2e35"; circle(0, 0, 14); ctx.fillStyle = "rgba(255,138,128," + (0.5 + 0.4 * Math.sin(t * 5)) + ")"; circle(0, 0, 6);
+      break;
     }
   }
-  if (b.flash > 0 && b.kind !== 4 && b.kind !== "mid") { ctx.fillStyle = "rgba(255,255,255,0.35)"; for (const r of d.rects) ctx.fillRect(r[0], r[1], r[2] - r[0], r[3] - r[1]); }
+  if (fl && b.kind !== "F2" && b.kind !== "m0" && b.kind !== "m4") { ctx.fillStyle = "rgba(255,255,255,0.22)"; for (const r of d.rects) ctx.fillRect(r[0], r[1], r[2] - r[0], r[3] - r[1]); }
   for (const q of b.parts) {
-    if (!q.alive) { ctx.fillStyle = "#1a1a1a"; circle(q.dx, q.dy, q.r * 0.8); ctx.fillStyle = "#ff7043"; circle(q.dx + rnd(-2, 2), q.dy + rnd(-2, 2), 2); continue; }
+    if (!q.alive) { ctx.fillStyle = "#1a1a1a"; circle(q.dx, q.dy, q.r * 0.8); ctx.fillStyle = "#ff7043"; circle(q.dx, q.dy, 2); continue; }
     ctx.fillStyle = q.flash > 0 ? "#ffffff" : "#2f353d"; circle(q.dx, q.dy, q.r);
     ctx.fillStyle = "#59626e"; circle(q.dx, q.dy, q.r * 0.6);
     const a = Math.atan2(G.p.y - (b.y + q.dy), G.p.x - (b.x + q.dx));
@@ -1005,33 +1201,24 @@ function drawBoss(b) {
   }
   ctx.restore();
 }
+
+// 상단 정보판: 값이 바뀔 때만 다시 그려 두고, 매 장면에는 그림 한 장으로 붙인다
+const hud = { c: document.createElement("canvas"), key: "" };
 function drawHUD() {
-  const g = G, p = g.p, y = safeT + 8;
-  ctx.fillStyle = "rgba(0,0,0,0.38)"; ctx.fillRect(0, 0, W, y + 34);
-  txt("HP", 10, y + 6, 11, "#ffffff", "left", true, MONO);
-  const hr = p.hp / maxHP();
-  bar(30, y + 1, 104, 10, hr, hr < 0.3 ? "#ff5252" : hr < 0.6 ? "#ffd740" : "#69f0ae");
-  txt(Math.ceil(p.hp) + "", 140, y + 6, 11, "#ffffff", "left", true, MONO);
-  txt("STAGE " + g.stage, 236, y + 6, 14, "#ffd54f", "center", true, MONO);
-  txt("Lv" + SV.lvl, 10, y + 22, 11, "#7cff9b", "left", true, MONO);
-  bar(46, y + 20, 50, 4, SV.lvl >= 50 ? 1 : SV.xp / xpNeed(SV.lvl), "#7cff9b");
-  txt("PWR", 104, y + 22, 10, "#ff8a80", "left", true, MONO);
-  for (let i = 0; i < 5; i++) { ctx.fillStyle = i < p.wl ? "#ff5252" : "rgba(255,255,255,0.25)"; ctx.fillRect(130 + i * 7, y + 18, 5, 8); }
-  ctx.fillStyle = "#ffd54f"; circle(178, y + 22, 4.5);
-  txt(fmt(SV.gold + g.goldGot), 186, y + 22, 11, "#ffd54f", "left", true, MONO);
-  txt(fmt(g.score), W - 48, y + 22, 11, "#ffffff", "right", true, MONO);
+  const g = G, p = g.p, y = safeT + 8, b = g.boss && !g.boss.dead && !g.boss.enter ? g.boss : null;
+  const hh = Math.ceil(y + (b ? 62 : 36));
+  const xr = SV.lvl >= LVMAX ? 1 : SV.xp / xpNeed(SV.lvl);
+  const key = [hh, Math.ceil(p.hp), maxHP(), g.stage, SV.lvl, Math.floor(xr * 50), p.wl, SV.gold + g.goldGot, g.score,
+    b ? Math.ceil(b.hp / b.maxhp * 300) + b.name + b.phase : "", S, dpr].join("|");
+  if (key !== hud.key) { hud.key = key; renderHud(hh, y, b, xr); }
+  ctx.drawImage(hud.c, 0, 0, hud.c.width, hud.c.height, 0, 0, W, hh);
   if (scene === "play") btn("pause", W - 42, y - 3, 34, 28, "II", () => go("pause"), { instant: true, size: 13, color: "rgba(0,0,0,0.45)", border: "rgba(255,255,255,0.6)" });
-  const b = g.boss;
-  if (b && !b.dead) {
-    txt(b.name, W / 2, y + 42, 12, "#ff8a80");
-    bar(16, y + 51, W - 32, 6, b.hp / b.maxhp, b.phase === 2 ? "#ff1744" : b.phase === 1 ? "#ff9100" : "#ffd54f");
-  }
   if (g.banner) {
     const bn = g.banner, a = clamp(bn.t * 1.5, 0, 1);
     if (!bn.warn || Math.floor(bn.t * 4) % 2 === 0 || bn.t < 0.6) {
       ctx.globalAlpha = a;
       if (bn.warn) { ctx.fillStyle = "rgba(180,0,0,0.35)"; ctx.fillRect(0, H * 0.36 - 32, W, 64); }
-      txt(bn.text, W / 2, H * 0.36 - 8, bn.warn ? 30 : 28, bn.warn ? "#ff5252" : "#ffffff", "center", true, MONO);
+      txt(bn.text, W / 2, H * 0.36 - 8, 28, bn.warn ? "#ff5252" : "#ffffff", "center", true, MONO);
       if (bn.sub) txt(bn.sub, W / 2, H * 0.36 + 20, 15, bn.warn ? "#ffcdd2" : "#b3e5fc");
       ctx.globalAlpha = 1;
     }
@@ -1045,6 +1232,31 @@ function drawHUD() {
     ui.next.push({ id: "bomb", x: bx - 32, y: by - 32, w: 64, h: 64, cb: useBomb, instant: true });
   }
 }
+function renderHud(hh, y, b, xr) {
+  const g = G, p = g.p, c = hud.c, k = S * dpr, cw = Math.ceil(W * k), ch = Math.ceil(hh * k);
+  if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; }
+  const saved = ctx; ctx = c.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cw, ch); ctx.setTransform(k, 0, 0, k, 0, 0);
+  ctx.fillStyle = "rgba(0,0,0,0.38)"; ctx.fillRect(0, 0, W, y + 34);
+  txt("HP", 10, y + 6, 11, "#ffffff", "left", true, MONO);
+  const hr = p.hp / maxHP();
+  bar(30, y + 1, 104, 10, hr, hr < 0.3 ? "#ff5252" : hr < 0.6 ? "#ffd740" : "#69f0ae");
+  txt(Math.ceil(p.hp) + "", 140, y + 6, 11, "#ffffff", "left", true, MONO);
+  txt("STAGE " + g.stage, 238, y + 6, 14, "#ffd54f", "center", true, MONO);
+  txt("Lv" + SV.lvl, 10, y + 22, 11, "#7cff9b", "left", true, MONO);
+  bar(50, y + 20, 46, 4, xr, "#7cff9b");
+  txt("PWR", 104, y + 22, 10, "#ff8a80", "left", true, MONO);
+  for (let i = 0; i < 5; i++) { ctx.fillStyle = i < p.wl ? "#ff5252" : "rgba(255,255,255,0.25)"; ctx.fillRect(130 + i * 7, y + 18, 5, 8); }
+  ctx.fillStyle = "#ffd54f"; circle(178, y + 22, 4.5);
+  txt(fmt(SV.gold + g.goldGot), 186, y + 22, 11, "#ffd54f", "left", true, MONO);
+  txt(fmt(g.score), W - 48, y + 22, 11, "#ffffff", "right", true, MONO);
+  if (b) {
+    txt(b.name, W / 2, y + 42, 12, b.final ? "#ff5252" : b.big ? "#ff8a80" : "#ffcc80");
+    const np = b.def.pat.length;
+    bar(16, y + 51, W - 32, 6, b.hp / b.maxhp, b.phase === np - 1 ? "#ff1744" : b.phase >= 1 ? "#ff9100" : "#ffd54f");
+  }
+  ctx = saved;
+}
 
 // ======================================================================
 // 메뉴 화면
@@ -1056,62 +1268,76 @@ const TIPS = [
   "편대를 모두 격추하면 P 아이템이 나옵니다.",
   "비행기 가운데 흰 점만 맞지 않으면 됩니다.",
   "격추돼도 경험치와 골드 절반은 남습니다. 강화하고 다시!",
+  "보스의 포탑을 먼저 부수면 총알이 줄어듭니다.",
+  "기뢰는 터질 때 총알을 퍼뜨립니다. 멀리서 쏘세요.",
 ];
+function toggleSound() { SV.sound = !SV.sound; persist(); unlockAudio(); audioPolicy(); }
+function toggleSaver() { SV.saver = !SV.saver; persist(); resize(); }
 function drawTitle() {
   drawBgBase(); drawClouds();
-  const top = safeT + Math.max(30, H * 0.08);
+  const small = H < 640, top = safeT + (small ? 18 : Math.max(30, H * 0.07)), gap = small ? 50 : 56;
   const px = ((uiT * 70) % (W + 120)) - 60;
-  ctx.drawImage(PL.planeS, px + 12, top + 150); ctx.drawImage(PL.plane, px - 16, top + 132 + Math.sin(uiT * 3) * 4);
-  txt("SKY ACE", W / 2, top + 30, 46, "#ffffff", "center", true, MONO);
-  txt("50", W / 2, top + 86, 60, "#ffd54f", "center", true, MONO);
-  txt("1942 레트로 슈팅 · 50 스테이지", W / 2, top + 126, 14, "#e3f2fd");
-  let y = top + 176;
-  const cont = SV.allClear ? 50 : SV.unlocked;
-  btn("start", 60, y, W - 120, 54, "출격 ▶  STAGE " + cont, () => { nextStage = cont; go("hangar"); }, { size: 19, color: "#c62828", border: "#ffcdd2", press: "#e53935" }); y += 66;
-  btn("select", 60, y, W - 120, 46, "스테이지 선택", () => go("select")); y += 56;
-  btn("help", 60, y, W - 120, 46, "조작법 · 게임 방법", () => go("help")); y += 56;
-  btn("sound", 60, y, W - 120, 46, "소리: " + (SV.sound ? "켜짐" : "꺼짐"), () => { SV.sound = !SV.sound; persist(); unlockAudio(); }, { color: "#263238" }); y += 62;
+  ctx.drawImage(PL.planeS, px + 12, top + 146); ctx.drawImage(PL.plane, px - 16, top + 128 + Math.sin(uiT * 3) * 4);
+  txt("SKY ACE", W / 2, top + 28, 44, "#ffffff", "center", true, MONO);
+  txt("200", W / 2, top + 80, 54, "#ffd54f", "center", true, MONO);
+  txt("1942 레트로 슈팅 · 200 스테이지", W / 2, top + 118, 14, "#e3f2fd");
+  let y = top + 166;
+  const cont = SV.clear200 ? MAXS : SV.unlocked;
+  btn("start", 60, y, W - 120, gap - 4, "출격 ▶  STAGE " + cont, () => { nextStage = cont; go("hangar"); }, { size: 19, color: "#c62828", border: "#ffcdd2", press: "#e53935" }); y += gap + 4;
+  btn("select", 60, y, W - 120, gap - 10, "스테이지 선택", () => go("select")); y += gap;
+  btn("help", 60, y, W - 120, gap - 10, "조작법 · 게임 방법", () => go("help")); y += gap;
+  btn("sound", 60, y, (W - 128) / 2, gap - 10, "소리 " + (SV.sound ? "켜짐" : "꺼짐"), toggleSound, { size: 14, color: "#263238" });
+  btn("saver", 68 + (W - 128) / 2, y, (W - 128) / 2, gap - 10, "절전 " + (SV.saver ? "켜짐" : "꺼짐"), toggleSaver, { size: 14, color: SV.saver ? "#1b5e20" : "#263238" }); y += gap + 4;
   const n = Object.keys(SV.cleared).length;
-  txt("조종사 Lv " + SV.lvl + " · " + fmt(SV.gold) + "G · 클리어 " + n + "/50", W / 2, y, 13, "#ffffff");
-  btn("reset", W / 2 - 70, H - safeB - 44, 140, 32, resetArm > uiT ? "한 번 더 누르면 초기화" : "기록 초기화",
+  txt("조종사 Lv " + SV.lvl + " · " + fmt(SV.gold) + "G · 클리어 " + n + "/" + MAXS, W / 2, y, 13, "#ffffff");
+  txt(SV.saver ? "절전 모드: 30fps · 저해상도 · 효과 절약" : "일반 모드: 60fps · 고해상도", W / 2, y + 20, 11, "#b3e5fc", "center", false);
+  btn("reset", W / 2 - 70, H - safeB - 42, 140, 30, resetArm > uiT ? "한 번 더 누르면 초기화" : "기록 초기화",
     () => { if (resetArm > uiT) { SV = freshSave(); persist(); resetArm = 0; toast = { s: "기록을 초기화했습니다", t: 2 }; } else resetArm = uiT + 3; },
     { size: 11, color: "rgba(0,0,0,0.45)", border: "rgba(255,255,255,0.35)" });
 }
 function drawHelp() {
-  drawBgBase(); dim(0.6);
-  let y = safeT + 30;
-  txt("조작법 · 게임 방법", W / 2, y, 20, "#ffffff"); y += 34;
+  drawBgBase(); dim(0.62);
+  let y = safeT + 28;
+  txt("조작법 · 게임 방법", W / 2, y, 20, "#ffffff"); y += 32;
   const sec = (h, lines) => {
-    txt(h, 18, y, 15, "#ffd54f", "left"); y += 24;
-    for (const l of lines) y = wrap("· " + l, 22, y, W - 44, 19, 13, "#e3f2fd") + 4;
-    y += 6;
+    txt(h, 18, y, 15, "#ffd54f", "left"); y += 22;
+    for (const l of lines) y = wrap("· " + l, 22, y, W - 44, 18, 12.5, "#e3f2fd") + 3;
+    y += 5;
   };
   sec("조작", ["화면 아무 곳이나 손가락을 대고 끌면 비행기가 같은 방향으로 움직입니다. 손가락이 비행기를 가리지 않습니다.",
-    "총은 자동으로 쏩니다.", "오른쪽 아래 BOMB: 화면의 적 총알을 모두 지우고 큰 피해를 줍니다.", "키보드: 방향키·WASD 이동, 스페이스·X 폭탄, P 일시정지"]);
-  sec("성장 (RPG)", ["적을 잡으면 경험치가 쌓이고, 레벨이 오르면 공격력과 체력이 올라갑니다.",
-    "코인을 모아 격납고에서 6가지를 강화합니다.", "P 무기 단계 업(최대 5) · + 체력 회복 · B 폭탄 추가",
+    "총은 자동으로 쏩니다. 오른쪽 아래 BOMB은 적 총알을 모두 지우고 큰 피해를 줍니다.", "키보드: 방향키·WASD 이동, 스페이스·X 폭탄, P 일시정지"]);
+  sec("성장 (RPG)", ["적을 잡으면 경험치가 쌓이고, 레벨(최대 150)이 오르면 공격력과 체력이 올라갑니다.",
+    "코인으로 격납고에서 6가지를 강화합니다. 공격력·장갑은 40단계까지 있습니다.", "P 무기 단계 업(최대 5) · + 체력 회복 · B 폭탄 추가",
     "격추돼도 경험치와 골드 절반은 남습니다."]);
-  sec("스테이지", ["5개 지역 × 10판 = 50판", "5판마다 중간 보스, 10판마다 거대 보스", "비행기 가운데 흰 점이 피격 판정입니다."]);
-  btn("hback", 60, H - safeB - 64, W - 120, 46, "◀ 돌아가기", () => go("title"));
+  sec("200 스테이지", ["10개 지역 × 20판. 매 판 끝에 보스가 나옵니다.", "10판마다 대형 보스, 다시 나올 때마다 Mk-II·Mk-III로 강해집니다.",
+    "100판과 200판은 최종 보스입니다.", "비행기 가운데 흰 점이 피격 판정입니다."]);
+  sec("절전 모드", ["켜면 화면을 1초에 30번만 그리고, 해상도와 폭발 효과를 줄여 배터리를 아낍니다. 메뉴 화면은 멈춰 있을 때 그리기를 쉽니다."]);
+  btn("hback", 60, H - safeB - 60, W - 120, 44, "◀ 돌아가기", () => go("title"));
 }
 function drawSelect() {
   drawBgBase(); dim(0.55);
-  let y = safeT + 26;
-  txt("스테이지 선택", W / 2, y, 20, "#ffffff"); y += 26;
-  txt("열린 스테이지 1 ~ " + SV.unlocked, W / 2, y, 12, "#b3e5fc"); y += 20;
-  const bw = 32, gap = 2, x0 = (W - (bw * 10 + gap * 9)) / 2;
-  const blockH = clamp((H - safeB - 80 - y) / 5, 58, 90);
-  for (let w = 0; w < 5; w++) {
-    txt((w + 1) + ". " + WORLDS[w].name + "  —  보스: " + BOSS_NAMES[w], x0, y + 9, 12, "#ffd54f", "left");
-    for (let i = 0; i < 10; i++) {
-      const s = w * 10 + i + 1, open = s <= SV.unlocked, done = SV.cleared[s];
-      const col = !open ? null : s % 10 === 0 ? "#b71c1c" : s % 5 === 0 ? "#e65100" : done ? "#1b5e20" : "#1565c0";
-      btn("s" + s, x0 + i * (bw + gap), y + 20, bw, 34, String(s), () => { nextStage = s; go("hangar"); },
-        { disabled: !open, size: 13, color: col, border: done ? "#b9f6ca" : "#bbdefb" });
-    }
-    y += blockH;
+  let y = safeT + 24;
+  txt("스테이지 선택", W / 2, y, 20, "#ffffff"); y += 24;
+  txt("열린 스테이지 1 ~ " + SV.unlocked, W / 2, y, 12, "#b3e5fc"); y += 22;
+  const r = selRegion, first = r * 20 + 1;
+  btn("rprev", 10, y, 44, 40, "◀", () => { selRegion = (selRegion + 9) % 10; BG.world = selRegion; }, { size: 16, color: "#263238" });
+  btn("rnext", W - 54, y, 44, 40, "▶", () => { selRegion = (selRegion + 1) % 10; BG.world = selRegion; }, { size: 16, color: "#263238" });
+  txt((r + 1) + ". " + REGIONS[r].name, W / 2, y + 12, 17, "#ffd54f");
+  txt("STAGE " + first + " ~ " + (first + 19), W / 2, y + 31, 11, "#cfd8dc", "center", false, MONO);
+  y += 52;
+  const cw = 62, chh = clamp((H - safeB - 190 - y) / 4, 40, 58), x0 = (W - cw * 5 - 4 * 6) / 2;
+  for (let i = 0; i < 20; i++) {
+    const s = first + i, open = s <= SV.unlocked, done = SV.cleared[s], fin = s === 100 || s === 200;
+    const col = !open ? null : fin ? "#4a0000" : s % 10 === 0 ? "#b71c1c" : done ? "#1b5e20" : "#1565c0";
+    btn("s" + s, x0 + (i % 5) * (cw + 6), y + Math.floor(i / 5) * (chh + 6), cw, chh, s % 10 === 0 ? s + "★" : String(s), () => { nextStage = s; go("hangar"); },
+      { disabled: !open, size: 14, color: col, border: fin ? "#ff5252" : done ? "#b9f6ca" : "#bbdefb" });
   }
-  btn("sback", 60, H - safeB - 62, W - 120, 46, "◀ 돌아가기", () => go("title"));
+  y += 4 * (chh + 6) + 6;
+  panel(14, y, W - 28, 64);
+  const b1 = bossInfo(first + 9), b2 = bossInfo(first + 19);
+  txt("★ " + (first + 9) + "판 · " + b1.name, 26, y + 20, 12, "#ff8a80", "left");
+  txt("★ " + (first + 19) + "판 · " + b2.name, 26, y + 44, 12, b2.def.final ? "#ff5252" : "#ff8a80", "left");
+  btn("sback", 60, H - safeB - 58, W - 120, 44, "◀ 돌아가기", () => go("title"));
 }
 function drawHangar() {
   drawBgBase(); dim(0.5);
@@ -1121,19 +1347,22 @@ function drawHangar() {
   y += 36;
   panel(10, y, W - 20, 64);
   txt("조종사 Lv " + SV.lvl, 22, y + 17, 16, "#7cff9b", "left");
-  bar(22, y + 33, 140, 6, SV.lvl >= 50 ? 1 : SV.xp / xpNeed(SV.lvl), "#7cff9b");
-  txt(SV.lvl >= 50 ? "MAX" : fmt(SV.xp) + " / " + fmt(xpNeed(SV.lvl)) + " XP", 22, y + 51, 10, "#b0bec5", "left", false, MONO);
+  bar(22, y + 33, 140, 6, SV.lvl >= LVMAX ? 1 : SV.xp / xpNeed(SV.lvl), "#7cff9b");
+  txt(SV.lvl >= LVMAX ? "MAX" : fmt(SV.xp) + " / " + fmt(xpNeed(SV.lvl)) + " XP", 22, y + 51, 10, "#b0bec5", "left", false, MONO);
   txt("보유 골드", W - 22, y + 17, 12, "#cfd8dc", "right");
   txt(fmt(SV.gold) + " G", W - 22, y + 42, 21, "#ffd54f", "right", true, MONO);
   y += 72;
-  txt("공격 " + Math.round(dmgBase()) + " · 체력 " + maxHP() + " · 무기 " + "★".repeat(SV.wl) + "☆".repeat(5 - SV.wl), W / 2, y + 8, 12, "#ffccbc");
-  y += 22;
-  const rowH = clamp((H - safeB - 78 - y) / UPS.length, 46, 64);
+  const bi = bossInfo(nextStage);
+  txt("공격 " + fmt(dmgBase()) + " · 체력 " + fmt(maxHP()) + " · 무기 " + "★".repeat(SV.wl) + "☆".repeat(5 - SV.wl), W / 2, y + 7, 12, "#ffccbc");
+  txt("다음: " + REGIONS[regionIdx(nextStage)].name + " · 보스 " + bi.name, W / 2, y + 25, 11, bi.def.final ? "#ff5252" : "#b3e5fc");
+  y += 38;
+  const rowH = clamp((H - safeB - 78 - y) / UPS.length, 44, 62);
   for (const u of UPS) {
     const lv = SV.up[u.k], full = lv >= u.max, cost = upCost(u), h = rowH - 6, cy = y + h / 2;
     panel(10, y, W - 20, h);
     txt(u.name, 22, cy - 9, 15, "#ffffff", "left");
-    for (let i = 0; i < u.max; i++) { ctx.fillStyle = i < lv ? "#7cff9b" : "rgba(255,255,255,0.18)"; ctx.fillRect(112 + i * 12, cy - 13, 9, 7); }
+    txt(lv + "/" + u.max, 104, cy - 9, 11, "#7cff9b", "left", true, MONO);
+    bar(150, cy - 11, 86, 4, lv / u.max, "#7cff9b");
     txt(u.desc, 22, cy + 10, 11, "#b0bec5", "left", false);
     btn("up_" + u.k, W - 104, cy - 16, 86, 32, full ? "MAX" : fmt(cost) + "G",
       () => { if (buyUp(u)) { sfx("lvl"); toast = { s: u.name + " 강화 완료 (" + SV.up[u.k] + "/" + u.max + ")", t: 1.6 }; } },
@@ -1148,17 +1377,18 @@ function drawHangar() {
 }
 function drawPause() {
   dim(0.6);
-  let y = H * 0.28;
+  let y = H * 0.24;
   txt("일시정지", W / 2, y, 26, "#ffffff"); y += 40;
   btn("resume", 60, y, W - 120, 50, "계속하기 ▶", () => go("play"), { size: 18, color: "#c62828", border: "#ffcdd2" }); y += 62;
-  btn("restart", 60, y, W - 120, 46, "이 스테이지 처음부터", () => startStage(G.stage)); y += 56;
-  btn("quit", 60, y, W - 120, 46, "격납고로 나가기", () => abortStage(), { color: "#263238" }); y += 56;
-  btn("psound", 60, y, W - 120, 46, "소리: " + (SV.sound ? "켜짐" : "꺼짐"), () => { SV.sound = !SV.sound; persist(); unlockAudio(); }, { color: "#263238" }); y += 60;
+  btn("restart", 60, y, W - 120, 44, "이 스테이지 처음부터", () => startStage(G.stage)); y += 54;
+  btn("quit", 60, y, W - 120, 44, "격납고로 나가기", () => abortStage(), { color: "#263238" }); y += 54;
+  btn("psound", 60, y, (W - 128) / 2, 44, "소리 " + (SV.sound ? "켜짐" : "꺼짐"), toggleSound, { size: 14, color: "#263238" });
+  btn("psaver", 68 + (W - 128) / 2, y, (W - 128) / 2, 44, "절전 " + (SV.saver ? "켜짐" : "꺼짐"), toggleSaver, { size: 14, color: SV.saver ? "#1b5e20" : "#263238" }); y += 60;
   wrap("나가면 이번 판에서 모은 골드의 절반만 남습니다.", 40, y, W - 80, 18, 12, "#b0bec5");
 }
 function drawResult() {
   const g = G; dim(0.55);
-  const top = Math.max(safeT + 20, H * 0.14), x = 24;
+  const top = Math.max(safeT + 20, H * 0.12), x = 24;
   panel(16, top, W - 32, 330);
   txt("STAGE " + g.stage + " CLEAR!", W / 2, top + 32, 25, "#ffd54f", "center", true, MONO);
   let y = top + 72;
@@ -1170,48 +1400,52 @@ function drawResult() {
   row("점수", fmt(g.score) + (g.newBest ? " ★" : ""), g.newBest ? "#ff8a80" : "#ffffff");
   row("조종사 레벨", "Lv " + SV.lvl, "#7cff9b");
   row("보유 골드", fmt(SV.gold) + " G", "#ffd54f");
-  y = top + 330 + 16;
-  const ns = Math.min(50, g.stage + 1);
-  btn("rhangar", 30, y, W - 60, 50, "격납고에서 강화 → STAGE " + ns, () => { nextStage = ns; go("hangar"); }, { size: 16 }); y += 60;
-  btn("rnext", 30, y, W - 60, 46, "바로 다음 스테이지 ▶", () => startStage(ns), { size: 15, color: "#c62828", border: "#ffcdd2" }); y += 56;
-  btn("rtitle", 30, y, W - 60, 40, "타이틀", () => go("title"), { size: 14, color: "#263238" });
+  y = top + 330 + 14;
+  const ns = Math.min(MAXS, g.stage + 1);
+  btn("rhangar", 30, y, W - 60, 48, "격납고에서 강화 → STAGE " + ns, () => { nextStage = ns; go("hangar"); }, { size: 16 }); y += 56;
+  btn("rnext", 30, y, W - 60, 46, "바로 다음 스테이지 ▶", () => startStage(ns), { size: 15, color: "#c62828", border: "#ffcdd2" }); y += 54;
+  btn("rtitle", 30, y, W - 60, 38, "타이틀", () => go("title"), { size: 14, color: "#263238" });
 }
 function drawOver() {
   const g = G; dim(0.62);
-  const top = Math.max(safeT + 30, H * 0.16);
+  const top = Math.max(safeT + 30, H * 0.14);
   panel(16, top, W - 32, 250);
   txt("격추당했습니다", W / 2, top + 34, 25, "#ff5252");
-  txt("STAGE " + g.stage + " · 진행 " + Math.min(99, Math.round(g.t / (stageLen(g.stage) + (g.stage % 5 === 0 ? 30 : 0)) * 100)) + "%", W / 2, top + 66, 13, "#cfd8dc");
+  txt("STAGE " + g.stage + (g.boss ? " · 보스전에서 격추" : " · 보스 전에 격추"), W / 2, top + 66, 13, "#cfd8dc");
   let y = top + 98;
   txt("골드 절반 보존  +" + fmt(g.kept) + " G", W / 2, y, 15, "#ffd54f"); y += 26;
   txt("경험치 유지  Lv " + SV.lvl, W / 2, y, 15, "#7cff9b"); y += 26;
   txt("무기 단계 " + SV.wl + "/5", W / 2, y, 13, "#ff8a80"); y += 30;
   wrap("TIP · " + TIPS[g.stage % TIPS.length], 34, y, W - 68, 18, 12, "#e3f2fd");
-  y = top + 266;
+  y = top + 264;
   btn("oretry", 30, y, W - 60, 50, "다시 도전 ▶", () => startStage(g.stage), { size: 18, color: "#c62828", border: "#ffcdd2" }); y += 60;
   btn("ohangar", 30, y, W - 60, 46, "격납고에서 강화하기", () => { nextStage = g.stage; go("hangar"); }); y += 56;
   btn("otitle", 30, y, W - 60, 40, "타이틀", () => go("title"), { size: 14, color: "#263238" });
 }
-function drawEnding() {
+function drawEnding(mid) {
   drawBgBase(); drawClouds(); dim(0.45);
-  let y = safeT + Math.max(40, H * 0.12);
-  txt("ALL CLEAR!", W / 2, y, 34, "#ffd54f", "center", true, MONO); y += 46;
-  txt("50개 스테이지를 모두 돌파했습니다", W / 2, y, 16, "#ffffff"); y += 40;
+  let y = safeT + Math.max(40, H * 0.1);
+  txt(mid ? "STAGE 100 CLEAR!" : "ALL CLEAR!", W / 2, y, mid ? 28 : 34, "#ffd54f", "center", true, MONO); y += 46;
+  txt(mid ? "첫 번째 최종 보스를 쓰러뜨렸습니다" : "200개 스테이지를 모두 돌파했습니다", W / 2, y, 16, "#ffffff"); y += 40;
   ctx.drawImage(PL.plane, W / 2 - 16, y + Math.sin(uiT * 3) * 4); y += 60;
-  for (const l of ["흑색 에이스 네메시스가 바다로 떨어지고,", "폭풍이 걷힌 하늘에 아침 해가 떴습니다.", "", "당신은 이제 진짜 SKY ACE입니다.",
-    "", "조종사 Lv " + SV.lvl + " · 보유 " + fmt(SV.gold) + "G", "모든 스테이지를 다시 도전할 수 있습니다."]) { txt(l, W / 2, y, 14, "#e3f2fd"); y += 24; }
-  btn("etitle", 60, H - safeB - 70, W - 120, 50, "타이틀로", () => go("title"), { size: 17 });
+  const lines = mid
+    ? ["천공 요새 아틀라스가 구름 아래로 가라앉습니다.", "하지만 폭풍 너머, 더 깊은 하늘에서", "검은 날개의 그림자가 움직이기 시작했습니다.", "", "남은 100판 — 진짜 끝은 200판에 있습니다.", "", "조종사 Lv " + SV.lvl + " · 보유 " + fmt(SV.gold) + "G"]
+    : ["흑룡 네메시스 Ω가 성층권 아래로 떨어지고,", "하늘에 다시 아침 해가 떴습니다.", "", "당신은 이제 진짜 SKY ACE입니다.", "", "조종사 Lv " + SV.lvl + " · 보유 " + fmt(SV.gold) + "G", "모든 스테이지를 다시 도전할 수 있습니다."];
+  for (const l of lines) { txt(l, W / 2, y, 14, "#e3f2fd"); y += 24; }
+  if (mid) btn("mnext", 60, H - safeB - 128, W - 120, 50, "STAGE 101로 ▶", () => { nextStage = 101; go("hangar"); }, { size: 17, color: "#c62828", border: "#ffcdd2" });
+  btn("etitle", 60, H - safeB - 68, W - 120, 46, "타이틀로", () => go("title"), { size: 16 });
 }
 
 // ======================================================================
-// 메인 그리기 · 루프
+// 그리기 · 루프 (필요할 때만 깨어나서 그린다)
 // ======================================================================
+const PERF = { frames: 0, js: 0 };
 function draw() {
   ui.next = [];
-  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (offX > 0.5 || offY > 0.5) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height); }
   ctx.setTransform(S * dpr, 0, 0, S * dpr, offX * dpr, offY * dpr);
   ctx.imageSmoothingEnabled = false;
-  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
   if (G && (scene === "play" || scene === "pause" || scene === "result" || scene === "over")) drawGame();
   if (scene === "title") drawTitle();
   else if (scene === "help") drawHelp();
@@ -1220,27 +1454,45 @@ function draw() {
   else if (scene === "pause") drawPause();
   else if (scene === "result") drawResult();
   else if (scene === "over") drawOver();
-  else if (scene === "ending") drawEnding();
+  else if (scene === "ending") drawEnding(false);
+  else if (scene === "midend") drawEnding(true);
   if (toast) {
     ctx.globalAlpha = clamp(toast.t * 3, 0, 1);
     ctx.font = "bold 13px " + FONT; const w = ctx.measureText(toast.s).width + 30;
     ctx.fillStyle = "rgba(0,0,0,0.8)"; rr(W / 2 - w / 2, H * 0.5 - 18, w, 36, 18); ctx.fill();
     txt(toast.s, W / 2, H * 0.5, 13, "#ffffff"); ctx.globalAlpha = 1;
   }
-  ctx.restore();
   ui.btns = ui.next;
 }
-let last = performance.now(), acc = 0;
-function frame(now) {
-  let dt = (now - last) / 1000; last = now;
+// 장면별 목표 화면 갱신 횟수 (0 = 바뀔 때만 그림)
+function targetFps() {
+  if (scene === "play") return SV.saver ? 30 : 60;
+  if (scene === "title" || scene === "ending" || scene === "midend") return SV.saver ? 12 : 24;
+  return toast ? 15 : 0;
+}
+let last = 0, acc = 0, scheduled = false;
+function wake() { dirty = true; schedule(); }
+function schedule() {
+  if (scheduled || document.hidden) return;
+  scheduled = true;
+  const fps = targetFps();
+  if (fps >= 60 || fps === 0) requestAnimationFrame(tick);
+  else setTimeout(() => requestAnimationFrame(tick), Math.max(0, 1000 / fps - 6));
+}
+function tick(now) {
+  scheduled = false;
+  const t0 = performance.now();
+  let dt = last ? (now - last) / 1000 : STEP; last = now;
   if (dt > 0.25) dt = 0.25;
   if (!FREEZE) {
     acc += dt; let n = 0;
-    while (acc >= STEP && n < 8) { update(STEP); acc -= STEP; n++; }
-    if (n >= 8) acc = 0;
+    while (acc >= STEP && n < 10) { update(STEP); acc -= STEP; n++; }
+    if (n >= 10) acc = 0;
   }
-  draw();
-  requestAnimationFrame(frame);
+  const fps = targetFps();
+  if (fps > 0 || dirty) { draw(); dirty = false; PERF.frames++; }
+  PERF.js += performance.now() - t0;
+  if (fps > 0) schedule(); else { last = 0; acc = 0; }
 }
 
 // ======================================================================
@@ -1257,8 +1509,8 @@ cv.addEventListener("pointerdown", e => {
   e.preventDefault(); unlockAudio();
   const [x, y] = toLogical(e), b = hitBtn(x, y);
   if (b) {
-    if (b.instant) { if (b.cb) b.cb(); return; }
-    inp.downBtn = b.id; inp.btnPid = e.pointerId; return;
+    if (b.instant) { if (b.cb) b.cb(); wake(); return; }
+    inp.downBtn = b.id; inp.btnPid = e.pointerId; wake(); return;
   }
   if (scene === "play" && inp.dragId === null) { inp.dragId = e.pointerId; inp.lx = x; inp.ly = y; }
 }, { passive: false });
@@ -1272,11 +1524,11 @@ function pointerEnd(e) {
   if (e.pointerId === inp.btnPid) {
     const [x, y] = toLogical(e), b = hitBtn(x, y);
     if (b && b.id === inp.downBtn && b.cb) b.cb();
-    inp.downBtn = null; inp.btnPid = null;
+    inp.downBtn = null; inp.btnPid = null; wake();
   }
 }
 cv.addEventListener("pointerup", pointerEnd);
-cv.addEventListener("pointercancel", e => { if (e.pointerId === inp.dragId) inp.dragId = null; if (e.pointerId === inp.btnPid) { inp.downBtn = null; inp.btnPid = null; } });
+cv.addEventListener("pointercancel", e => { if (e.pointerId === inp.dragId) inp.dragId = null; if (e.pointerId === inp.btnPid) { inp.downBtn = null; inp.btnPid = null; wake(); } });
 document.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
 document.addEventListener("gesturestart", e => e.preventDefault());
 document.addEventListener("contextmenu", e => e.preventDefault());
@@ -1287,10 +1539,14 @@ addEventListener("keydown", e => {
   if (KM[e.code]) { key[KM[e.code]] = 1; e.preventDefault(); }
   else if ((e.code === "Space" || e.code === "KeyX") && scene === "play") { useBomb(); e.preventDefault(); }
   else if (e.code === "KeyP" || e.code === "Escape") { if (scene === "play") go("pause"); else if (scene === "pause") go("play"); }
+  wake();
 });
 addEventListener("keyup", e => { if (KM[e.code]) key[KM[e.code]] = 0; });
 addEventListener("blur", () => { key.l = key.r = key.u = key.d = 0; });
-document.addEventListener("visibilitychange", () => { if (document.hidden && scene === "play") go("pause", true); persist(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { if (scene === "play") go("pause"); persist(); }
+  audioPolicy(); if (!document.hidden) { last = 0; wake(); }
+});
 
 // ======================================================================
 // 테스트 도구 (자동 플레이 검증용)
@@ -1298,9 +1554,9 @@ document.addEventListener("visibilitychange", () => { if (document.hidden && sce
 window.__T = {
   run(stage, o) {
     o = o || {}; TEST = true; newGame(stage); G.god = !!o.god; G.bot = o.bot !== false; G.skill = o.skill === undefined ? 1 : o.skill; scene = "play";
-    const maxN = (o.maxT || 400) * 60; let n = 0;
+    const maxN = (o.maxT || 600) * 60; let n = 0;
     while (!G.finished && n < maxN) { update(STEP); n++; }
-    return { stage, cleared: scene === "result" || scene === "ending", t: +(n / 60).toFixed(1), hits: G.hitsTaken,
+    return { stage, cleared: scene === "result" || scene === "ending" || scene === "midend", t: +(n / 60).toFixed(1), hits: G.hitsTaken,
       dmg: Math.round(G.dmgTaken), maxhp: maxHP(), kills: G.kills, gold: G.goldGot + (G.bonus || 0), lvl: SV.lvl,
       wl: G.p.wl, bossT: G.bossT ? +G.bossT.toFixed(1) : null, maxEb: G.maxEb, timeout: !G.finished };
   },
@@ -1312,8 +1568,8 @@ window.__T = {
   },
   campaign(o) {
     o = o || {}; TEST = true; SV = freshSave();
-    const out = []; let s = 1, tries = 0, total = 0;
-    while (s <= 50 && total < (o.maxRuns || 300)) {
+    const out = []; let s = o.from || 1, tries = 0, total = 0; const to = o.to || MAXS;
+    while (s <= to && total < (o.maxRuns || 900)) {
       const r = this.run(s, o); r.try = ++tries; total++; this.shop(); r.ups = Object.values(SV.up).reduce((a, b) => a + b, 0); out.push(r);
       if (r.cleared) { s++; tries = 0; } else if (tries >= (o.maxTries || 10)) break;
     }
@@ -1322,23 +1578,20 @@ window.__T = {
   peek(stage, sec, o) {
     o = o || {}; TEST = true; newGame(stage); G.god = true; G.bot = true; G.skill = 1; scene = "play";
     for (let i = 0; i < sec * 60 && !G.finished; i++) update(STEP);
-    G.bot = false; TEST = false; FREEZE = !!o.freeze; return { scene, boss: !!G.boss, eb: G.eb.length, en: G.en.length };
+    if (o.bossAt !== undefined && G.boss) G.boss.hp = G.boss.maxhp * o.bossAt;
+    G.bot = !!o.keepBot; TEST = false; FREEZE = !!o.freeze; wake(); return { scene, boss: G.boss && G.boss.name, eb: G.eb.length, en: G.en.length };
   },
   setSave(p) { SV = Object.assign(freshSave(), p); },
-  scene(s) { go(s, true); },
+  scene(s) { go(s); },
   btnAt(id) { const b = ui.btns.find(b => b.id === id); return b ? [(b.x + b.w / 2) * S + offX, (b.y + b.h / 2) * S + offY] : null; },
-  state() { return { scene, stage: G && G.stage, px: G && Math.round(G.p.x), py: G && Math.round(G.p.y), bombs: G && G.p.bombs, gold: SV.gold, up: SV.up.atk, H, S: +S.toFixed(3) }; },
+  state() { return { scene, stage: G && G.stage, px: G && Math.round(G.p.x), py: G && Math.round(G.p.y), bombs: G && G.p.bombs, gold: SV.gold, up: SV.up.atk, H, S: +S.toFixed(3), dpr, saver: SV.saver }; },
+  perf() { const r = { frames: PERF.frames, js: +PERF.js.toFixed(1), px: cv.width * cv.height }; PERF.frames = 0; PERF.js = 0; return r; },
+  bosses() { const o = []; for (let s = 1; s <= MAXS; s++) o.push(s + ":" + bossInfo(s).name); return o; },
 };
-
-resize();
-window.addEventListener("resize", resize);
-window.addEventListener("orientationchange", () => setTimeout(resize, 250));
-nextStage = SV.allClear ? 50 : SV.unlocked;
-requestAnimationFrame(frame);
 
 function resize() {
   const vw = window.innerWidth, vh = window.innerHeight;
-  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  dpr = Math.min(window.devicePixelRatio || 1, SV.saver ? 1.5 : 2);
   H = clamp(Math.round(W * vh / vw), 560, 860);
   S = Math.min(vw / W, vh / H);
   offX = (vw - W * S) / 2; offY = (vh - H * S) / 2;
@@ -1348,7 +1601,13 @@ function resize() {
   safeT = Math.max(0, ((parseFloat(cs.paddingTop) || 0) - offY) / S);
   safeB = Math.max(0, ((parseFloat(cs.paddingBottom) || 0) - offY) / S);
   if (G && G.p) { G.p.x = clamp(G.p.x, 14, W - 14); G.p.y = clamp(G.p.y, safeT + 70, H - safeB - 24); }
+  hud.key = ""; wake();
 }
+resize();
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", () => setTimeout(resize, 250));
+nextStage = SV.clear200 ? MAXS : SV.unlocked;
+wake();
 </script>
 <script>if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js");</script>
 </body>
