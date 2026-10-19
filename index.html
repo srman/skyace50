@@ -34,7 +34,7 @@ document.getElementById("nojs").remove();
 // ======================================================================
 // 기본 설정
 // ======================================================================
-const W = 360, STEP = 1 / 60, MAXS = 200, LVMAX = 150, VERSION = "2026.10.17-7";
+const W = 360, STEP = 1 / 60, MAXS = 200, LVMAX = 150, VERSION = "2026.10.20-8";
 const FONT = '-apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif';
 const MONO = 'Menlo, Consolas, "Courier New", monospace';
 const cv = document.getElementById("c"), mainCtx = cv.getContext("2d", { alpha: false });
@@ -361,6 +361,328 @@ function drawMyJet(x, y, shadow) {
   drawJetFlames(j.J, x, y, j.k, j.eng, false);
   ctx.drawImage(j.game, x - j.ox, y - j.oy, j.w, j.h);
 }
+// ======================================================================
+// 적 기종 · 보스 — 실제 기종을 위에서 본 정밀 도면 (한 번 그려 두고 재사용)
+// ======================================================================
+const CAMO = [
+  { b: "#8796a4", d: "#5f6d7a", l: "#b3c0ca", ln: "#46515b", acc: "#c62828", camo: false },
+  { b: "#8c9a6a", d: "#5c6844", l: "#b5c08f", ln: "#47512f", acc: "#d84315", camo: true },
+  { b: "#c4a66f", d: "#8d7346", l: "#e2cb98", ln: "#6e5935", acc: "#5d4037", camo: true },
+  { b: "#d3dbdf", d: "#93a5ae", l: "#f0f3f4", ln: "#7b8b93", acc: "#1565c0", camo: true },
+  { b: "#3e4658", d: "#272d3b", l: "#5b657a", ln: "#1b2029", acc: "#9a46c0", camo: false },
+  { b: "#5b7a3a", d: "#36491f", l: "#82a05c", ln: "#2a3a18", acc: "#b5462e", camo: true },
+  { b: "#5c433a", d: "#3a2824", l: "#7f5d52", ln: "#2a1c19", acc: "#ff9100", camo: false },
+  { b: "#a9c5d9", d: "#6f8ea6", l: "#d6e8f3", ln: "#5a7890", acc: "#3b5ba5", camo: true },
+  { b: "#6f7479", d: "#4a4e52", l: "#959a9f", ln: "#383b3e", acc: "#c0ca33", camo: true },
+  { b: "#2b2d35", d: "#18191e", l: "#474a56", ln: "#101114", acc: "#b0bec5", camo: false },
+];
+const ACE_PAL = { b: "#23242b", d: "#111216", l: "#3a3b45", ln: "#0b0b0e", acc: "#ffca28" };
+const DRONE_PAL = { b: "#b9a27a", d: "#8a7552", l: "#d8c49c", ln: "#6b5a3e", acc: "#e53935" };
+const GLASS = "#7fb8d8", METAL = "#2b2f35";
+function painter(g, pal, flat, cached) {
+  const C = c => flat || c;
+  const fillPath = (col, lw) => { g.fillStyle = C(col); g.fill(); if (!flat && lw) { g.strokeStyle = pal.ln; g.lineWidth = lw; g.stroke(); } };
+  return {
+    flat: !!flat, g,
+    sym(half, col, lw) { symPath(g, half); fillPath(col, lw); },
+    both(pts, col, lw) { bothPath(g, pts); fillPath(col, lw); },
+    poly(pts, col, lw) { g.beginPath(); g.moveTo(pts[0][0], pts[0][1]); for (const q of pts) g.lineTo(q[0], q[1]); g.closePath(); fillPath(col, lw); },
+    ell(x, y, rx, ry, col, m) { g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); if (m) { g.moveTo(-x + rx, y); g.ellipse(-x, y, rx, ry, 0, 0, Math.PI * 2); } g.fillStyle = C(col); g.fill(); },
+    circ(x, y, r, col, m) { this.ell(x, y, r, r, col, m); },
+    rect(x, y, w, h, col, m) { g.fillStyle = C(col); g.fillRect(x, y, w, h); if (m) g.fillRect(-x - w, y, w, h); },
+    line(pts, col, w, m) {
+      if (flat) return; g.strokeStyle = col; g.lineWidth = w; g.beginPath();
+      for (const sg of m ? [1, -1] : [1]) { g.moveTo(pts[0][0] * sg, pts[0][1]); for (const q of pts) g.lineTo(q[0] * sg, q[1]); }
+      g.stroke();
+    },
+    star(x, y, r, col, m) {
+      if (flat) return;
+      for (const sg of m ? [1, -1] : [1]) {
+        g.beginPath();
+        for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; g.lineTo(x * sg + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+        g.closePath(); g.fillStyle = col; g.fill();
+      }
+    },
+    camo(box, n, size, seed) {
+      if (flat || !cached || !pal.camo) return;
+      const R = rng(seed || 7); g.save(); g.globalCompositeOperation = "source-atop"; g.fillStyle = pal.d; g.globalAlpha = 0.45;
+      for (let i = 0; i < n; i++) { g.beginPath(); g.ellipse(box[0] + R() * (box[2] - box[0]), box[1] + R() * (box[3] - box[1]), size * (0.6 + R()), size * (0.8 + R() * 1.2), R() * 3, 0, Math.PI * 2); g.fill(); }
+      g.restore();
+    },
+  };
+}
+// 일반 적 (기수가 위쪽인 좌표로 그리고, 그림으로 만들 때 아래를 보게 돌린다)
+const MODELS = {
+  mig21: { w: 18, h: 31, k: 1, draw(p, P) {      // MiG-21 피시베드
+    p.both([[1.8, -3], [8.2, 8], [8.2, 9.6], [2, 9.6]], P.b, 0.3);
+    p.both([[1.5, 10], [5.2, 13], [5.2, 14.2], [1.5, 13.6]], P.d, 0.25);
+    p.sym([[0, -14.5], [1.5, -13.5], [2.1, -9], [2.3, 4], [2, 12], [1.4, 14.6], [0, 14.6]], P.b, 0.3);
+    p.camo([-9, -15, 9, 15], 6, 1.6, 21);
+    p.line([[0, -12], [0, 12]], P.l, 0.6);
+    p.ell(0, -14.2, 1.1, 0.8, "#22262b"); p.ell(0, -14.4, 0.55, 0.5, "#9aa0a6");
+    p.rect(-0.35, 4, 0.7, 10.5, P.d); p.rect(-1.25, 14, 2.5, 1.2, METAL);
+    p.ell(0, -7.2, 0.85, 2.3, GLASS); p.ell(-0.25, -7.9, 0.25, 0.8, "rgba(255,255,255,0.6)");
+    p.star(5.4, 6.6, 0.95, P.acc, true);
+  } },
+  mig29: { w: 22, h: 33, k: 1, draw(p, P) {      // MiG-29 펄크럼
+    p.both([[2.6, -3], [10, 4.5], [10, 6.6], [3.2, 7.2]], P.b, 0.3);
+    p.both([[1.4, -12], [2.6, -3], [4.8, -0.5]], P.b, 0.25);
+    p.both([[3, 9.5], [8.2, 13.5], [8.2, 15.2], [3, 14.5]], P.d, 0.25);
+    p.rect(1.2, -2, 2.2, 16.5, P.d, true);
+    p.sym([[0, -15.5], [1, -13.8], [1.6, -9], [2.4, -3], [2.6, 6], [2.2, 14], [1.6, 15], [0, 15]], P.b, 0.3);
+    p.camo([-11, -16, 11, 16], 7, 1.7, 29);
+    p.both([[2.8, 5.5], [3.7, 5.5], [4.4, 12.5], [3.5, 12.5]], P.d);
+    p.rect(1.4, 15, 1.8, 1.3, METAL, true);
+    p.ell(0, -8.5, 0.95, 2.5, GLASS); p.line([[0, -5], [0, 12]], P.l, 0.5);
+    p.star(6.5, 4.2, 0.9, P.acc, true); p.rect(9.6, 1.5, 0.5, 5, "#e0e0e0", true);
+  } },
+  su25: { w: 25, h: 29, k: 1, draw(p, P) {       // Su-25 프로그풋
+    p.both([[1.8, -3.5], [11.5, -0.6], [11.5, 1.8], [2, 3.2]], P.b, 0.3);
+    p.both([[1.2, 9], [5.6, 10.4], [5.6, 12], [1.2, 12]], P.d, 0.25);
+    p.ell(2.7, -0.5, 1.4, 5.2, P.d, true);
+    p.sym([[0, -13.5], [0.9, -12], [1.6, -7], [1.7, 6], [1.1, 12], [0.6, 13.5], [0, 13.5]], P.b, 0.3);
+    p.camo([-12, -14, 12, 14], 7, 1.6, 25);
+    p.rect(-0.3, 7, 0.6, 6, P.d); p.rect(11.1, -1.2, 0.9, 3.6, P.d, true);
+    p.rect(4.6, -2, 0.8, 4.5, "#555a60", true); p.rect(7.6, -1.6, 0.8, 4.2, "#555a60", true);
+    p.ell(0, -9, 0.8, 1.9, GLASS); p.star(9, 0.6, 0.8, P.acc, true);
+  } },
+  su27: { w: 28, h: 39, k: 1, draw(p, P) {       // Su-27 플랭커 (에이스 도장)
+    p.both([[3.4, -3], [13, 7], [13, 9], [4, 9.6]], P.b, 0.3);
+    p.both([[1.8, -14], [3.4, -3], [5.6, -1]], P.b, 0.25);
+    p.both([[3.6, 11], [9.6, 15.2], [9.6, 17], [3.6, 16]], P.d, 0.25);
+    p.rect(1.3, 0, 2.6, 16.5, P.d, true);
+    p.sym([[0, -19], [1, -16.5], [1.8, -11], [2.4, -4], [3.4, 3], [3.6, 12], [3, 17], [0, 17]], P.b, 0.3);
+    p.both([[3.3, 7], [4.3, 7], [4.9, 15], [3.9, 15]], P.d);
+    p.rect(-0.6, 16, 1.2, 3.2, P.d); p.rect(1.5, 16.5, 2.2, 1.4, METAL, true);
+    p.ell(0, -11, 1, 2.9, GLASS);
+    p.rect(11.6, 6.3, 1.2, 2.8, P.acc, true); p.rect(-1.3, -15.5, 2.6, 0.8, P.acc); p.both([[3.4, 9], [4.6, 9], [5, 12], [3.8, 12]], P.acc);
+    p.rect(12.7, 2, 0.5, 5.5, "#e0e0e0", true); p.rect(7.5, 2, 0.5, 5, "#e0e0e0", true);
+  } },
+  drone: { w: 15, h: 16, k: 1.2, draw(p, P) {    // 자폭 드론 (샤헤드형)
+    p.both([[0.8, -4.5], [6.8, 4.2], [6.8, 5.6], [1, 5]], P.b, 0.25);
+    p.sym([[0, -7.4], [0.9, -5.6], [1.1, 4], [0.8, 6.4], [0, 6.4]], P.b, 0.25);
+    p.rect(6.4, 2.8, 0.6, 3.4, P.d, true); p.rect(-2, 6.4, 4, 0.5, "#222222"); p.ell(0, -6, 0.6, 0.9, "#333333");
+    p.star(3.6, 2.4, 0.7, P.acc, true);
+  } },
+  tu95: { w: 52, h: 50, k: 1.05, draw(p, P) {    // Tu-95 베어 (프로펠러 4발)
+    p.both([[2.2, -3], [25, 9.5], [25, 11.5], [2.6, 6]], P.b, 0.35);
+    p.both([[1.6, 17], [9.5, 20.5], [9.5, 22.2], [1.6, 21.2]], P.d, 0.25);
+    for (const [x, y] of [[7.5, 1.5], [15, 5.5]]) {
+      p.ell(x, y, 1.5, 4.5, P.d, true);
+      p.rect(x - 3.8, y - 4.9, 7.6, 0.55, "rgba(30,30,30,0.75)", true); p.rect(x - 3.8, y - 4.1, 7.6, 0.55, "rgba(30,30,30,0.6)", true);
+      p.circ(x, y - 4.6, 0.6, "#555555", true);
+    }
+    p.sym([[0, -23], [1.6, -21], [2.4, -16], [2.6, 15], [1.8, 21], [0.8, 23.5], [0, 23.5]], P.b, 0.35);
+    p.camo([-25, -23, 25, 23], 10, 2.6, 95);
+    p.rect(-0.4, 13, 0.8, 10.5, P.d); p.line([[0, -14], [0, 13]], P.l, 0.8);
+    p.ell(0, -19.2, 1.4, 1.8, GLASS); p.rect(-0.5, 23, 1, 1.6, "#333333"); p.rect(-0.2, -25, 0.4, 2.5, "#444444");
+    p.star(18, 8, 1.4, P.acc, true);
+  } },
+  ac130: { w: 60, h: 42, k: 1.05, draw(p, P) {   // AC-130 건쉽 (왼쪽에 포)
+    p.both([[2.8, -4.2], [29, -2.6], [29, 0.6], [2.8, 1.8]], P.b, 0.35);
+    for (const x of [8, 16]) { p.ell(x, -4.5, 1.5, 4.6, P.d, true); p.rect(x - 3.8, -9.6, 7.6, 0.6, "rgba(30,30,30,0.75)", true); p.circ(x, -9.3, 0.6, "#555555", true); }
+    p.sym([[0, -20], [2.4, -18.5], [3.8, -14], [4, 12], [2.6, 17], [1.2, 19.5], [0, 19.5]], P.b, 0.35);
+    p.both([[1.8, 13], [10.5, 13.8], [10.5, 15.8], [1.8, 16.6]], P.d, 0.25);
+    p.camo([-29, -20, 29, 20], 10, 2.4, 13);
+    p.rect(-0.4, 10, 0.8, 9.5, P.d); p.rect(-1.8, -18.6, 3.6, 1, GLASS);
+    for (const y of [-6, -2, 3]) p.rect(-5.6, y, 1.8, 0.6, "#222222");
+    p.star(20, -1, 1.2, P.acc, true);
+  } },
+  mi24: { w: 16, h: 36, k: 1, draw(p, P) {       // Mi-24 하인드 (회전날개는 따로 그린다)
+    p.both([[1.8, -2.4], [7.4, -1.6], [7.4, 2], [1.8, 2.6]], P.d, 0.25);
+    p.ell(6.2, 0.4, 0.9, 2.3, "#555a60", true);
+    p.sym([[0, -14], [1.4, -12.5], [2.2, -7], [2.5, 3], [1.6, 7], [0.7, 9], [0.55, 19], [0, 20]], P.b, 0.3);
+    p.camo([-3, -14, 3, 18], 5, 1.4, 24);
+    p.both([[0.4, 13], [3.4, 14.5], [3.4, 15.6], [0.4, 15]], P.d);
+    p.ell(0, -11, 1.15, 1.5, GLASS); p.ell(0, -7.4, 1.35, 1.7, GLASS); p.ell(1.7, -3.2, 0.7, 1.1, P.d, true);
+    p.rect(0.5, 15.5, 0.6, 5, "#333333"); p.star(4.8, 0.2, 0.8, P.acc, true);
+  } },
+  t72: { w: 16, h: 24, k: 1.1, draw(p, P) {      // T-72 차체 (포탑은 따로)
+    p.rect(4.2, -11, 2.8, 22, "#3b3b2f", true);
+    for (let y = -10; y < 11; y += 2) p.rect(4.2, y, 2.8, 0.45, "#26261d", true);
+    p.rect(-4.3, -10.5, 8.6, 21, P.b); p.rect(-4.3, -11, 8.6, 2, P.d);
+    p.camo([-5, -11, 5, 11], 5, 1.5, 72);
+    for (const x of [-3, -1, 1, 3]) p.rect(x - 0.7, -10.8, 1.4, 1.4, P.l);
+    for (const y of [5, 6.5, 8]) p.rect(-3.2, y, 6.4, 0.5, P.d);
+    p.circ(-2, 9.8, 1, "#4e4e3a"); p.circ(2, 9.8, 1, "#4e4e3a");
+  } },
+  t72t: { w: 10, h: 36, k: 1.1, draw(p, P) {     // T-72 포탑 (포신이 위쪽)
+    p.rect(-0.55, -16.5, 1.1, 14, "#2a2e35"); p.rect(-0.8, -17.2, 1.6, 1.2, "#1e2126");
+    p.ell(0, 0, 4, 4.4, P.b); p.camo([-4, -4, 4, 4], 3, 1.2, 73);
+    p.circ(1.6, 1, 1.1, P.d); p.circ(-1.6, 1.6, 0.9, P.d); p.rect(-2.8, -3.6, 5.6, 1, P.l);
+  } },
+  osa: { w: 9, h: 36, k: 1.1, draw(p, P) {       // 오사급 미사일 고속정
+    p.sym([[0, -17], [2.2, -12], [3.6, -4], [3.6, 13], [3, 16.5], [0, 16.5]], P.b, 0.3);
+    p.rect(-2.2, -6, 4.4, 8, P.l); p.rect(-1.2, -4, 2.4, 3, "#3d444d");
+    p.rect(1.6, 2, 1.8, 9, P.d, true); p.rect(1.6, 2, 1.8, 1, METAL, true); p.circ(0, -2, 0.8, "#333333");
+    p.rect(-1.2, 13, 2.4, 2.5, P.d);
+  } },
+  osat: { w: 6, h: 12, k: 1.1, draw(p, P) {      // 함포 (포신이 위쪽)
+    p.rect(-0.35, -5.5, 0.7, 5, "#2a2e35"); p.circ(0, 0, 1.6, P.d);
+  } },
+};
+const MSPR = {};
+function modelSprite(name, pal, palKey) {
+  const m = MODELS[name], res = S * dpr, key = name + "|" + palKey + "|" + res.toFixed(3);
+  let s = MSPR[key]; if (s) return s;
+  const pad = 1, W2 = m.w + pad * 2, H2 = m.h + pad * 2;
+  const mk = (flat, outline) => {
+    const c = document.createElement("canvas"), k = m.k * res;
+    c.width = Math.ceil(W2 * k); c.height = Math.ceil(H2 * k);
+    const g = c.getContext("2d");
+    // 배경과 같은 색 위장 도장이어도 잘 보이게 얇은 테두리를 먼저 깐다
+    if (outline) for (const [ox, oy] of [[0.6, 0], [-0.6, 0], [0, 0.6], [0, -0.6]]) {
+      g.setTransform(k, 0, 0, k, (W2 / 2 + ox) * k, (H2 / 2 + oy) * k); g.rotate(Math.PI);
+      m.draw(painter(g, pal, "rgba(10,12,16,0.75)", true), pal, g);
+    }
+    g.setTransform(k, 0, 0, k, W2 / 2 * k, H2 / 2 * k); g.rotate(Math.PI);
+    m.draw(painter(g, pal, flat, true), pal, g); return c;
+  };
+  s = { img: mk(null, true), white: mk("#ffffff", true), shadow: mk("rgba(0,0,0,0.28)"), w: W2 * m.k, h: H2 * m.k };
+  return (MSPR[key] = s);
+}
+const KIND_MODEL = { fighter: "mig21", side: "mig29", diver: "su25", ace: "su27", kami: "drone", bomber: "tu95", gunship: "ac130", heli: "mi24" };
+function enemyPal(kind) { return kind === "ace" ? [ACE_PAL, "ace"] : kind === "kami" ? [DRONE_PAL, "drone"] : [CAMO[G.reg], "r" + G.reg]; }
+
+// 보스 도면 (보스 기준 좌표, 아래쪽(+y)이 기수·선수)
+const BOSS_PALS = {
+  A: { b: "#e4e7ea", d: "#a9b0b6", l: "#ffffff", ln: "#8a9298" },
+  V: { b: "#4a4f57", d: "#33373d", l: "#60666f", ln: "#2a2d32" },
+  S: { b: "#c9cdd2", d: "#8e949b", l: "#e6e9ec", ln: "#7a8087" },
+  F1: { b: "#4b5064", d: "#2f3242", l: "#6b718a", ln: "#23252f" },
+  F2: { b: "#16161c", d: "#0b0b0f", l: "#2c2c36", ln: "#000000", acc: "#ff1744" },
+  m4: { b: "#3b2328", d: "#24151a", l: "#5a3a40", ln: "#140a0c", acc: "#ffd54f" },
+};
+function bossPal(kind) { const base = CAMO[G.reg]; return BOSS_PALS[kind] ? Object.assign({ acc: base.acc }, BOSS_PALS[kind]) : base; }
+const BOSS_ART = {
+  K(p, P) {   // 키로프급 핵순양함
+    if (!p.flat) p.poly([[0, -104], [-34, -150], [34, -150]], "rgba(255,255,255,0.16)");
+    p.sym([[0, 106], [20, 82], [44, 32], [47, -40], [42, -86], [30, -102], [0, -104]], P.d, 1);
+    p.sym([[0, 98], [17, 78], [39, 32], [42, -40], [37, -82], [26, -96], [0, -98]], P.b, 0.6);
+    if (!p.flat) for (let r = 0; r < 4; r++) for (let c = -2; c <= 2; c++) p.rect(c * 7 - 2.5, 40 + r * 8, 5, 5, P.d);
+    p.rect(-17, -36, 34, 58, P.l, false); p.rect(-12, -6, 24, 18, P.d);
+    p.circ(0, -16, 6.5, METAL); p.circ(0, -16, 2.6, P.l); p.circ(0, -48, 5, METAL);
+    p.rect(-24, -96, 48, 30, P.d);
+    p.line([[-8, -90], [-8, -72]], "#ffd54f", 1.4); p.line([[8, -90], [8, -72]], "#ffd54f", 1.4); p.line([[-8, -81], [8, -81]], "#ffd54f", 1.4);
+  },
+  A(p, P) {   // Tu-160 블랙잭
+    p.both([[16, 40], [118, -22], [118, -32], [16, -2]], P.b, 0.8);
+    p.both([[13, 64], [36, 32], [36, 4], [13, 4]], P.b, 0.8);
+    p.both([[10, -80], [46, -98], [46, -104], [10, -96]], P.d, 0.6);
+    for (const x of [22, 32]) { p.rect(x - 4.5, -62, 9, 52, P.d, true); p.rect(x - 4, -67, 8, 5, METAL, true); }
+    p.sym([[0, 112], [6, 104], [11, 86], [14, 50], [15, -60], [12, -96], [6, -108], [0, -110]], P.b, 0.8);
+    p.line([[0, 95], [0, -95]], P.l, 2); p.rect(-1.5, -110, 3, 42, P.d);
+    p.ell(0, 92, 4, 7, GLASS); p.star(78, -6, 6, P.acc, true); p.rect(-15, 30, 30, 3, P.acc);
+  },
+  V(p, P) {   // B-2 스피릿형 전익기
+    p.sym([[0, 72], [128, -6], [128, -16], [96, -38], [66, -16], [38, -44], [0, -26]], P.b, 0.8);
+    p.sym([[0, 60], [40, 30], [38, 10], [0, 4]], P.l);
+    p.both([[14, 24], [28, 17], [26, 12], [13, 18]], "#22262b"); p.both([[14, -22], [32, -30], [30, -35], [12, -27]], "#1d2024");
+    p.both([[2, 52], [7, 47], [6, 44], [2, 47]], "#5b7a99");
+    p.line([[0, 72], [128, -6]], P.l, 1, true);
+  },
+  B(p, P, b) {   // P1000 라테 초중전차
+    for (const x of [51, 60, 69]) {
+      p.rect(x, -84, 8, 168, "#2f2a1e", true);
+      if (!p.flat) for (let y = -84 + (b.t * 30) % 8; y < 82; y += 8) p.rect(x, y, 8, 2, "#1d1a12", true);
+    }
+    p.rect(-50, -78, 100, 156, P.b); p.rect(-50, -78, 100, 8, P.l); p.rect(-40, -70, 80, 28, P.d);
+    if (!p.flat) for (let x = -34; x <= 34; x += 8) p.rect(x, -66, 4, 20, P.ln);
+    const g = p.g, aim = (oy) => Math.atan2(G.p.y - (b.y + oy), G.p.x - b.x) - Math.PI / 2;
+    g.save(); g.translate(0, 22); g.rotate(aim(22));
+    p.rect(-30, -24, 60, 48, P.d); p.rect(-15, 18, 9, 66, "#2a2418"); p.rect(6, 18, 9, 66, "#2a2418"); p.circ(0, -6, 8, P.l);
+    g.restore();
+    g.save(); g.translate(0, -46); g.rotate(aim(-46)); p.rect(-12, -10, 24, 20, P.d); p.rect(-2, 8, 4, 30, "#2a2418"); g.restore();
+  },
+  S(p, P, b) {   // 힌덴부르크급 비행선
+    p.both([[30, -96], [64, -124], [64, -132], [20, -108]], P.d, 0.6); p.rect(-2.5, -134, 5, 34, P.d);
+    p.ell(0, 0, 58, 112, P.b);
+    if (!p.flat) {
+      const g = p.g; g.strokeStyle = P.ln; g.lineWidth = 1;
+      for (const f of [0.75, 0.5, 0.25]) { g.beginPath(); g.ellipse(0, 0, 58 * f, 112, 0, 0, Math.PI * 2); g.stroke(); }
+      for (const y of [-80, -40, 0, 40, 80]) { const hw = 58 * Math.sqrt(1 - (y / 112) ** 2); g.beginPath(); g.moveTo(-hw, y); g.lineTo(hw, y); g.stroke(); }
+      g.strokeStyle = "rgba(160,200,255," + (0.3 + 0.3 * Math.sin(b.t * 9)) + ")"; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(-50, -60); g.lineTo(-30, -40); g.lineTo(-44, -20); g.moveTo(50, 30); g.lineTo(32, 50); g.lineTo(44, 70); g.stroke();
+    }
+    p.rect(-9, 36, 18, 36, "#3b3f48"); p.rect(-7, 62, 14, 3, "#9fd3ff");
+    for (const [x, y] of [[54, -14], [46, -58]]) { p.ell(x, y, 5, 9, "#3b3f48", true); p.rect(x - 7, y - 10, 14, 1.2, "rgba(30,30,30,0.7)", true); }
+    p.star(0, -76, 10, P.acc);
+  },
+  F1(p, P, b) {   // 천공 요새 아틀라스 (공중 항공모함)
+    p.sym([[0, 112], [60, 72], [128, 12], [128, -22], [92, -42], [40, -64], [0, -84]], P.d, 1);
+    p.sym([[0, 100], [54, 66], [116, 10], [116, -16], [86, -34], [36, -54], [0, -72]], P.b, 0.6);
+    for (const [x, y] of [[34, -52], [70, -36], [104, -22]]) { p.ell(x, y, 7, 14, "#30333d", true); if (!p.flat) p.ell(x, y - 13, 4, 3, "#00e5ff", true); }
+    p.rect(-16, -78, 32, 184, "#2a2d38");
+    if (!p.flat) { for (let y = -70; y < 98; y += 14) p.rect(-1, y, 2, 7, "#e0e0e0"); p.line([[15, -78], [15, 106]], "#ffd54f", 1, true); }
+    p.rect(20, -14, 10, 40, "#3a3f4c");
+    if (!p.flat) {
+      const g = p.g; g.strokeStyle = "#ffd54f"; g.lineWidth = 2; g.beginPath(); g.ellipse(0, 10, 70, 54, b.t * 0.5, 0, Math.PI * 2); g.stroke();
+      p.circ(0, 10, 13, "#1c1f2c"); g.fillStyle = "rgba(124,255,255," + (0.55 + 0.4 * Math.sin(b.t * 5)) + ")"; g.beginPath(); g.arc(0, 10, 7, 0, Math.PI * 2); g.fill();
+    }
+  },
+  F2(p, P, b) {   // 흑룡 네메시스 Ω (Su-47 베르쿠트형 전진익)
+    if (!p.flat) { const g = p.g; g.strokeStyle = "rgba(255,40,40," + (0.3 + 0.3 * Math.sin(b.t * 7)) + ")"; g.lineWidth = 3; g.beginPath(); g.arc(0, 0, 104 + Math.sin(b.t * 3) * 5, 0, Math.PI * 2); g.stroke(); }
+    p.both([[16, 0], [84, 32], [84, 20], [16, -34]], P.b, 0.8);
+    p.both([[14, 46], [38, 40], [38, 34], [14, 32]], P.d);
+    p.both([[14, -70], [44, -82], [44, -90], [14, -86]], P.d);
+    p.both([[18, -46], [24, -46], [28, -86], [22, -86]], P.l);
+    p.rect(10, -100, 8, 14, "#1a1a1f", true); if (!p.flat) p.rect(11, -104, 6, 4, "#ff1744", true);
+    p.sym([[0, 102], [6, 88], [12, 60], [18, 20], [20, -40], [18, -92], [12, -100], [0, -100]], P.b, 0.8);
+    p.line([[6, 80], [16, 20], [18, -60]], "#ff1744", 1.2, true); p.line([[16, 0], [84, 32]], "#ff5252", 1, true);
+    p.ell(0, 68, 4, 9, "#ff1744");
+  },
+  m0(p, P) {   // Tu-16 배저
+    p.both([[6, 18], [48, -6], [48, -12], [6, -6]], P.b, 0.6);
+    p.both([[4, -34], [20, -42], [20, -46], [4, -42]], P.d, 0.5);
+    p.ell(9, 4, 4.5, 14, P.d, true); p.rect(6, -13, 6, 3, METAL, true);
+    p.sym([[0, 47], [4, 42], [6, 30], [6, -36], [3, -46], [0, -47]], P.b, 0.6);
+    p.ell(0, 42, 3.5, 4.5, "#9fd3ff"); p.ell(0, 32, 3, 3.5, GLASS);
+    p.rect(-0.8, -46, 1.6, 14, P.d); p.circ(0, -46, 2, METAL); p.star(30, 0, 3, P.acc, true);
+  },
+  m1(p, P) {   // Su-34 풀백
+    p.both([[8, 10], [34, -18], [34, -24], [9, -24]], P.b, 0.6);
+    p.both([[5, 30], [8, 10], [13, 2]], P.b, 0.5);
+    p.both([[9, -34], [26, -46], [26, -52], [9, -48]], P.d, 0.5);
+    p.rect(4, -50, 6, 52, P.d, true); p.rect(4.5, -55, 5, 5, METAL, true);
+    p.sym([[0, 55], [5, 50], [8, 40], [8, 0], [9, -30], [8, -50], [4, -56], [0, -56]], P.b, 0.6);
+    p.both([[8, -26], [11, -26], [13, -46], [10, -46]], P.d);
+    p.ell(0, 32, 5, 9, GLASS); p.star(24, -14, 2.6, P.acc, true); p.rect(29, -20, 1.6, 12, "#e0e0e0", true);
+  },
+  m2(p, P) {   // 경비 비행선
+    p.both([[14, -64], [32, -80], [32, -86], [10, -72]], P.d, 0.5); p.rect(-1.5, -88, 3, 22, P.d);
+    p.ell(0, 0, 32, 78, P.l);
+    if (!p.flat) { const g = p.g; g.strokeStyle = P.ln; g.lineWidth = 0.8; for (const f of [0.66, 0.33]) { g.beginPath(); g.ellipse(0, 0, 32 * f, 78, 0, 0, Math.PI * 2); g.stroke(); } }
+    p.rect(-6, 22, 12, 28, "#3b3f48"); p.rect(-4, 44, 8, 2, "#9fd3ff");
+    p.ell(30, -6, 4, 7, "#3b3f48", true); p.star(0, -48, 7, P.acc);
+  },
+  m3(p, P) {   // 소브레멘니급 구축함 / T-14 아르마타
+    if (REGIONS[G.reg].ground === "tank") {
+      p.rect(22, -52, 10, 104, "#2f2a1e", true); p.rect(-22, -48, 44, 96, P.b); p.rect(-18, -44, 36, 24, P.d);
+      p.rect(-22, 44, 44, 6, P.l);
+    } else {
+      p.sym([[0, 76], [16, 50], [28, 10], [30, -55], [22, -72], [0, -74]], P.d, 0.8);
+      p.sym([[0, 68], [14, 46], [25, 10], [27, -52], [20, -67], [0, -69]], P.b, 0.5);
+      p.rect(-10, -22, 20, 34, P.l); p.rect(-7, 10, 14, 10, P.d); p.circ(0, -28, 5, METAL); p.rect(-12, -64, 24, 14, P.d);
+    }
+  },
+  m4(p, P) {   // Su-57 펠론
+    p.both([[4, 4], [16, -8], [16, -12], [5, -12]], P.b, 0.4);
+    p.both([[3, 14], [4, 4], [7, 0]], P.b, 0.3);
+    p.both([[4, -14], [12, -19], [12, -21], [4, -20]], P.d, 0.3);
+    p.both([[4, -8], [5.5, -8], [7, -18], [5.5, -18]], P.d);
+    p.sym([[0, 22], [2, 18], [3.4, 10], [4.2, 0], [4.6, -14], [3.4, -20], [0, -21]], P.b, 0.4);
+    p.rect(1.2, -23, 2.6, 3, METAL, true); p.ell(0, 10, 1.4, 3.2, "#d4a537"); p.rect(-4.6, -2, 9.2, 1.2, P.acc);
+  },
+  m5(p, P, b) {   // S-400 방공 진지 / 해상 플랫폼
+    const sea = REGIONS[G.reg].ground !== "tank", pts = [];
+    for (let i = 0; i < 8; i++) { const a = (i + 0.5) * Math.PI / 4; pts.push([Math.cos(a) * 56, Math.sin(a) * 46]); }
+    if (sea) for (const [x, y] of [[40, 30], [-40, 30], [40, -30], [-40, -30]]) p.circ(x, y, 6, "#2a2e35");
+    p.poly(pts, sea ? "#5f6670" : "#8d8a80", 1); p.poly(pts.map(q => [q[0] * 0.8, q[1] * 0.8]), sea ? "#78808a" : "#a6a397");
+    for (const y of [-25, 25]) p.rect(29, y - 9, 12, 18, P.d, true);
+    p.circ(0, 0, 11, "#2a2e35");
+    if (!p.flat) { const g = p.g, a = b.t * 2; g.strokeStyle = "#cfd8dc"; g.lineWidth = 3; g.beginPath(); g.moveTo(-Math.cos(a) * 10, -Math.sin(a) * 10); g.lineTo(Math.cos(a) * 10, Math.sin(a) * 10); g.stroke(); }
+  },
+};
 function magR() { return 40 + 24 * SV.up.mag; }
 function gainXP(n) {
   SV.xp += n; if (G) G.xpGot += n;
@@ -973,47 +1295,49 @@ function killEnemy(e) {
 // 보스 — 매 판 중간 보스, 10판마다 대형 보스, 100·200판 최종 보스
 // ======================================================================
 const MINI = [
-  { id: "m0", name: "중형 폭격기", w: 100, h: 60, ty: 120, hp: 1.0, gunY: 20, move: "sway", rects: [[-48, -10, 48, 6], [-8, -28, 8, 28]],
-    parts: [[-38, -2, 10, ["aim", 1, 0, 1, 1.6]], [38, -2, 10, ["aim", 1, 0, 1, 1.6]]],
+  { id: "m0", name: "Tu-16 배저 폭격기", w: 96, h: 94, ty: 120, hp: 1.0, gunY: 30, move: "sway", rects: [[-46, -12, 46, 16], [-7, -47, 7, 47]],
+    parts: [[-26, 4, 10, ["aim", 1, 0, 1, 1.6]], [26, 4, 10, ["aim", 1, 0, 1, 1.6]]],
     pat: [[["fan", 7, 1.4, 0.85, 1.9]], [["fan", 7, 1.4, 0.85, 1.7], ["aim", 3, 0.2, 1.0, 1.5]], [["ring", 14, 0.12, 0.7, 1.9], ["aim", 3, 0.2, 1.1, 1.3]]] },
-  { id: "m1", name: "쌍발 건쉽", w: 140, h: 90, ty: 120, hp: 1.1, gunY: 30, move: "sway", rects: [[-70, -10, 70, 10], [-36, -44, -24, 40], [24, -44, 36, 40], [-14, -30, 14, 32]],
-    parts: [[-30, -30, 10, ["aim", 1, 0, 1, 1.8]], [30, -30, 10, ["aim", 1, 0, 1, 1.8]], [-30, 30, 10, ["fan", 3, 0.5, 0.9, 2.2]], [30, 30, 10, ["fan", 3, 0.5, 0.9, 2.2]]],
+  { id: "m1", name: "Su-34 풀백 전폭기", w: 72, h: 112, ty: 130, hp: 1.1, gunY: 40, move: "sway", rects: [[-34, -24, 34, 10], [-9, -56, 9, 55]],
+    parts: [[-26, -10, 10, ["aim", 1, 0, 1, 1.8]], [26, -10, 10, ["aim", 1, 0, 1, 1.8]], [-14, -40, 9, ["fan", 3, 0.5, 0.9, 2.2]], [14, -40, 9, ["fan", 3, 0.5, 0.9, 2.2]]],
     pat: [[["aim", 3, 0.18, 1.0, 1.6]], [["aim", 3, 0.18, 1.0, 1.4], ["fan", 5, 1.0, 0.85, 2.0]], [["spiral", 2, 2.2, 0.7, 0.16], ["aim", 3, 0.18, 1.05, 1.5]]] },
   { id: "m2", name: "경비 비행선", w: 70, h: 160, ty: 140, hp: 1.2, gunY: 60, move: "slow", rects: [[-32, -78, 32, 78]],
     parts: [[0, -40, 11, ["ring", 6, 0.3, 0.6, 2.6]], [-22, 15, 10, ["aim", 1, 0, 1, 1.8]], [22, 15, 10, ["aim", 1, 0, 1, 1.8]]],
     pat: [[["ring", 10, 0.17, 0.65, 2.2]], [["ring", 12, 0.17, 0.65, 2.0], ["aim", 1, 0, 1.1, 1.0]], [["ring", 14, 0.2, 0.7, 1.6], ["fan", 5, 0.9, 0.85, 1.8]]] },
-  { id: "m3", name: "구축함", tankName: "중전차", w: 64, h: 150, ty: 130, hp: 1.1, gunY: 50, move: "sway", ground: true, rects: [[-30, -70, 30, 70]],
+  { id: "m3", names: { boat: "소브레멘니급 구축함", tank: "T-14 아르마타 전차", sky: "공중 순양함" }, w: 64, h: 150, ty: 130, hp: 1.1, gunY: 50, move: "sway", ground: true, rects: [[-30, -70, 30, 70]],
     parts: [[0, -45, 11, ["aim", 2, 0.15, 1, 1.9]], [0, 0, 11, ["fan", 3, 0.6, 0.9, 2.2]], [0, 40, 10, ["aim", 1, 0, 1.1, 1.5]]],
     pat: [[["fan", 5, 0.8, 0.9, 1.8]], [["fan", 7, 1.0, 0.9, 1.7], ["big", 1, 0, 0.6, 2.4]], [["spray", 1, 0, 0.85, 0.12], ["big", 3, 0.3, 0.6, 2.4]]] },
-  { id: "m4", name: "에이스 편대장", w: 40, h: 36, ty: 140, hp: 0.9, gunY: 12, move: "eight", orbit: true, rects: [[-20, -18, 20, 18]],
+  { id: "m4", name: "Su-57 펠론 편대장", w: 34, h: 44, ty: 140, hp: 0.9, gunY: 14, move: "eight", orbit: true, rects: [[-16, -21, 16, 22]],
     parts: [[-40, 0, 9, ["aim", 1, 0, 1.2, 1.3]], [40, 0, 9, ["aim", 1, 0, 1.2, 1.3]]],
     pat: [[["aim", 3, 0.12, 1.2, 1.1]], [["aim", 5, 0.12, 1.2, 1.2]], [["spiral", 2, 3.0, 0.75, 0.13], ["aim", 3, 0.12, 1.25, 1.2]]] },
-  { id: "m5", name: "공중 포대", w: 110, h: 90, ty: 130, hp: 1.2, gunY: 0, move: "slow", rects: [[-50, -40, 50, 40]],
+  { id: "m5", names: { boat: "해상 방공 플랫폼", tank: "S-400 방공 진지", sky: "공중 포대" }, w: 110, h: 90, ty: 130, hp: 1.2, gunY: 0, move: "slow", ground: true, rects: [[-50, -40, 50, 40]],
     parts: [[-35, -25, 10, ["aim", 1, 0, 1, 1.7]], [35, -25, 10, ["aim", 1, 0, 1, 1.7]], [-35, 25, 10, ["aim", 1, 0, 1, 1.7]], [35, 25, 10, ["aim", 1, 0, 1, 1.7]]],
     pat: [[["ring", 8, 0.2, 0.7, 1.8]], [["spiral", 3, 1.8, 0.65, 0.18]], [["spiral", 3, 1.8, 0.65, 0.16], ["ring", 12, 0.15, 0.7, 2.2]]] },
 ];
+const M3_LAND = Object.assign({}, MINI[3], { h: 104, rects: [[-32, -52, 32, 52]],
+  parts: [[0, -34, 10, ["aim", 2, 0.15, 1, 1.9]], [0, 2, 13, ["fan", 3, 0.6, 0.9, 2.2]], [0, 32, 9, ["aim", 1, 0, 1.1, 1.5]]] });
 const BIG = {
-  K: { name: "철갑 전함 크라켄", w: 96, h: 210, ty: 150, hp: 1.0, gunY: 60, move: "sway", ground: true, rects: [[-46, -100, 46, 60], [-30, 60, 30, 100]],
+  K: { name: "키로프급 핵순양함", w: 96, h: 210, ty: 150, hp: 1.0, gunY: 60, move: "sway", ground: true, rects: [[-46, -100, 46, 60], [-30, 60, 30, 100]],
     parts: [[-28, -60, 13, ["aim", 1, 0, 1, 1.6]], [28, -60, 13, ["aim", 1, 0, 1, 1.6]], [-28, -10, 13, ["aim", 3, 0.2, 0.9, 2.4]], [28, -10, 13, ["aim", 3, 0.2, 0.9, 2.4]]],
     pat: [[["ring", 12, 0.13, 0.7, 2.6]], [["ring", 14, 0.13, 0.7, 2.3], ["fan", 7, 1.2, 0.9, 1.9]], [["ring", 16, 0.13, 0.75, 2.1], ["spiral", 2, 2.4, 0.65, 0.16]]] },
-  A: { name: "거대 폭격기 알바트로스", w: 300, h: 130, ty: 130, hp: 1.15, gunY: 60, move: "sway", rects: [[-150, -16, 150, 16], [-22, -60, 22, 72], [-60, -62, 60, -48]],
-    parts: [[-55, 6, 14, ["fan", 3, 0.5, 0.9, 2.0]], [55, 6, 14, ["fan", 3, 0.5, 0.9, 2.0]], [-110, 6, 13, ["aim", 1, 0, 1, 1.8]], [110, 6, 13, ["aim", 1, 0, 1, 1.8]]],
+  A: { name: "Tu-160 블랙잭", w: 240, h: 224, ty: 140, hp: 1.15, gunY: 90, move: "sway", rects: [[-60, -12, 60, 40], [-118, -34, -60, 0], [60, -34, 118, 0], [-15, -108, 15, 112]],
+    parts: [[-28, -36, 13, ["fan", 3, 0.5, 0.9, 2.0]], [28, -36, 13, ["fan", 3, 0.5, 0.9, 2.0]], [-92, -18, 12, ["aim", 1, 0, 1, 1.8]], [92, -18, 12, ["aim", 1, 0, 1, 1.8]]],
     pat: [[["aim", 5, 0.16, 1.0, 1.7]], [["aim", 5, 0.16, 1.0, 1.5], ["ring", 14, 0.1, 0.6, 2.5]], [["spiral", 3, -2.2, 0.6, 0.17], ["aim", 3, 0.2, 1.1, 1.4]]] },
-  B: { name: "육상 요새 베헤모스", w: 150, h: 170, ty: 150, hp: 1.3, gunY: 30, move: "slow", ground: true, rects: [[-76, -82, 76, 82]],
+  B: { name: "P1000 라테 초중전차", w: 150, h: 170, ty: 150, hp: 1.3, gunY: 30, move: "slow", ground: true, rects: [[-76, -82, 76, 82]],
     parts: [[-36, -48, 14, ["aim", 2, 0.15, 1, 2.0]], [36, -48, 14, ["aim", 2, 0.15, 1, 2.0]], [-60, 62, 12, ["big", 1, 0, 0.6, 2.8]], [60, 62, 12, ["big", 1, 0, 0.6, 2.8]]],
     pat: [[["big", 1, 0, 0.55, 2.0], ["fan", 9, 1.6, 0.8, 2.6]], [["big", 3, 0.35, 0.55, 2.0], ["ring", 16, 0.1, 0.6, 2.6]], [["spray", 1, 0, 0.85, 0.09], ["big", 3, 0.35, 0.6, 2.3]]] },
-  V: { name: "공중 요새 발할라", w: 260, h: 130, ty: 130, hp: 1.45, gunY: 40, move: "sway", rects: [[-125, -50, 125, -10], [-60, -10, 60, 40], [-20, 40, 20, 75]],
-    parts: [[-90, -30, 12, ["aim", 1, 0, 1, 1.5]], [90, -30, 12, ["aim", 1, 0, 1, 1.5]], [-45, -30, 12, ["ring", 6, 0.3, 0.7, 2.6]], [45, -30, 12, ["ring", 6, 0.3, 0.7, 2.6]], [-35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]], [35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]]],
+  V: { name: "B-2 스피릿형 전익기", w: 260, h: 130, ty: 130, hp: 1.45, gunY: 40, move: "sway", rects: [[-120, -30, 120, 0], [-70, -40, 70, 30], [-30, -40, 30, 70]],
+    parts: [[-90, -26, 12, ["aim", 1, 0, 1, 1.5]], [90, -26, 12, ["aim", 1, 0, 1, 1.5]], [-45, -26, 12, ["ring", 6, 0.3, 0.7, 2.6]], [45, -26, 12, ["ring", 6, 0.3, 0.7, 2.6]], [-35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]], [35, 15, 12, ["fan", 3, 0.6, 0.9, 2.0]]],
     pat: [[["fan", 11, 2.0, 0.75, 2.4]], [["spiral", 4, 1.6, 0.6, 0.2], ["aim", 3, 0.2, 1.0, 2.0]], [["spiral", 3, 1.9, 0.65, 0.18], ["spiral", 3, -1.9, 0.65, 0.18], ["aim", 5, 0.15, 1.0, 2.4]]] },
-  S: { name: "뇌운 비행선 스톰브링거", w: 130, h: 230, ty: 150, hp: 1.4, gunY: 70, move: "slow", rects: [[-58, -110, 58, 110]],
+  S: { name: "힌덴부르크급 비행선", w: 130, h: 230, ty: 150, hp: 1.4, gunY: 70, move: "slow", rects: [[-58, -110, 58, 110]],
     parts: [[-62, -20, 13, ["aim", 1, 0, 1, 1.5]], [62, -20, 13, ["aim", 1, 0, 1, 1.5]], [0, -70, 12, ["ring", 8, 0.25, 0.65, 2.4]], [-30, 40, 11, ["fan", 3, 0.5, 0.9, 2.0]], [30, 40, 11, ["fan", 3, 0.5, 0.9, 2.0]], [0, 92, 11, ["aim", 3, 0.18, 1, 2.2]]],
     pat: [[["ring", 16, 0.13, 0.7, 2.4], ["aim", 3, 0.15, 1, 1.8]], [["spiral", 3, 1.9, 0.62, 0.18], ["ring", 12, 0.15, 0.7, 2.4]], [["spiral", 3, 2.1, 0.65, 0.16], ["spiral", 3, -2.1, 0.65, 0.16], ["aim", 5, 0.12, 1.05, 2.2]]] },
-  F1: { name: "천공 요새 아틀라스", final: true, w: 260, h: 220, ty: 140, hp: 2.5, gunY: 0, move: "slow", rects: [[-120, -80, 120, 80], [-60, -110, 60, 110]],
-    parts: [0, 1, 2, 3, 4, 5, 6, 7].map(i => [Math.round(Math.cos(i * Math.PI / 4) * 95), Math.round(Math.sin(i * Math.PI / 4) * 75), 12, i % 2 ? ["aim", 1, 0, 1.05, 1.6] : ["ring", 6, 0.3, 0.65, 2.6]]),
+  F1: { name: "천공 요새 아틀라스", final: true, w: 260, h: 220, ty: 140, hp: 2.5, gunY: 0, move: "slow", rects: [[-120, -60, 120, 30], [-60, -84, 60, 110]],
+    parts: [0, 1, 2, 3, 4, 5, 6, 7].map(i => [Math.round(Math.cos(i * Math.PI / 4) * 95), Math.round(Math.sin(i * Math.PI / 4) * 60) - 10, 12, i % 2 ? ["aim", 1, 0, 1.05, 1.6] : ["ring", 6, 0.3, 0.65, 2.6]]),
     pat: [[["ring", 16, 0.13, 0.7, 2.0], ["aim", 3, 0.15, 1.0, 1.6]], [["spiral", 4, 1.5, 0.6, 0.2], ["aim", 5, 0.12, 1.0, 1.8]],
       [["spiral", 3, 2.2, 0.65, 0.17], ["spiral", 3, -2.2, 0.65, 0.17], ["big", 3, 0.4, 0.55, 2.4]], [["ring", 20, 0.11, 0.75, 1.5], ["spiral", 4, 2.6, 0.7, 0.16], ["aim", 5, 0.1, 1.2, 1.4]]] },
-  F2: { name: "흑룡 네메시스 Ω", final: true, w: 200, h: 90, ty: 150, hp: 1.4, gunY: 20, move: "eight", rects: [[-44, -38, 44, 38], [-100, -12, 100, 10]],
-    parts: [[-80, -2, 11, ["aim", 1, 0, 1.25, 1.1]], [80, -2, 11, ["aim", 1, 0, 1.25, 1.1]], [-50, 26, 10, ["fan", 3, 0.5, 1.0, 1.8]], [50, 26, 10, ["fan", 3, 0.5, 1.0, 1.8]]],
+  F2: { name: "흑룡 네메시스 Ω", final: true, w: 170, h: 204, ty: 150, hp: 1.4, gunY: 60, move: "eight", rects: [[-21, -100, 21, 102], [-84, -34, 84, 32]],
+    parts: [[-62, 14, 11, ["aim", 1, 0, 1.25, 1.1]], [62, 14, 11, ["aim", 1, 0, 1.25, 1.1]], [-28, 40, 10, ["fan", 3, 0.5, 1.0, 1.8]], [28, 40, 10, ["fan", 3, 0.5, 1.0, 1.8]]],
     pat: [[["aim", 5, 0.1, 1.3, 1.0], ["ring", 12, 0.2, 0.7, 2.4]], [["spiral", 4, 3.0, 0.75, 0.13], ["aim", 3, 0.12, 1.4, 1.0]],
       [["spiral", 3, 2.4, 0.7, 0.13], ["spiral", 3, -2.4, 0.7, 0.13], ["big", 3, 0.35, 0.65, 2.0]], [["ring", 22, 0.1, 0.8, 1.3], ["spiral", 4, 3.4, 0.8, 0.13], ["aim", 5, 0.1, 1.45, 1.1]]] },
 };
@@ -1024,9 +1348,11 @@ function bossInfo(s) {
     const T = s / 10, kind = BIG_SEQ[T - 1], def = BIG[kind], gen = BIG_SEQ.slice(0, T).filter(k => k === kind).length;
     return { big: true, kind, def, gen, T, name: def.name + GEN[gen - 1] };
   }
-  const def = MINI[(s % 10 + regionIdx(s)) % 6];
+  let def = MINI[(s % 10 + regionIdx(s)) % 6];
   const gr = REGIONS[regionIdx(s)].ground;
-  return { big: false, kind: def.id, def, gen: 1, T: 0, name: def.tankName ? (gr === "tank" ? def.tankName : gr ? def.name : "공중 순양함") : def.name };
+  const name = def.names ? def.names[gr || "sky"] : def.name;
+  if (def.id === "m3" && gr === "tank") def = M3_LAND;
+  return { big: false, kind: def.id, def, gen: 1, T: 0, name };
 }
 function spawnBoss() {
   const g = G, s = g.stage, bi = bossInfo(s), def = bi.def, final = !!def.final;
@@ -1297,8 +1623,7 @@ function drawGame() {
   if (groundBoss) drawBoss(g.boss);
   drawClouds();
   if (g.boss && !groundBoss) drawBoss(g.boss);
-  const sp = spr(g.reg);
-  for (const e of g.en) if (!e.ground) drawEnemy(e, sp);
+  for (const e of g.en) if (!e.ground) drawEnemy(e);
   for (const it of g.items) drawItem(it);
   const gt = PT("gun").t, bw = gt >= 4 ? 4 : 3;
   ctx.fillStyle = BCOL[gt - 1];
@@ -1321,48 +1646,34 @@ function drawGame() {
   drawHUD();
 }
 function drawGround(e) {
-  const tank = REGIONS[G.reg].ground === "tank";
-  ctx.save(); ctx.translate(e.x, e.y);
-  if (tank) {
-    ctx.fillStyle = "#3b3b2f"; ctx.fillRect(-12, -12, 5, 24); ctx.fillRect(7, -12, 5, 24);
-    ctx.fillStyle = e.flash > 0 ? "#ffffff" : "#6b7a3a"; ctx.fillRect(-8, -10, 16, 20);
-  } else {
-    poly([[0, 18], [9, 6], [9, -14], [-9, -14], [-9, 6]], e.flash > 0 ? "#ffffff" : "#6d7480");
-    ctx.fillStyle = "rgba(255,255,255,0.35)"; ctx.fillRect(-10, -18, 20, 2);
-  }
-  const a = Math.atan2(G.p.y - e.y, G.p.x - e.x);
-  ctx.rotate(a); ctx.fillStyle = "#2a2e35"; ctx.fillRect(0, -2, 13, 4); ctx.rotate(-a);
-  ctx.fillStyle = "#444b55"; circle(0, 0, 5);
-  ctx.restore();
+  const tank = REGIONS[G.reg].ground === "tank", pal = CAMO[G.reg], pk = "r" + G.reg, fl = e.flash > 0 && Math.floor(e.t * 20) % 2 === 0;
+  const hull = modelSprite(tank ? "t72" : "osa", pal, pk);
+  ctx.drawImage(fl ? hull.white : hull.img, e.x - hull.w / 2, e.y - hull.h / 2, hull.w, hull.h);
+  const tur = modelSprite(tank ? "t72t" : "osat", pal, pk), ty = tank ? e.y : e.y + 11;
+  ctx.save(); ctx.translate(e.x, ty); ctx.rotate(Math.atan2(G.p.y - ty, G.p.x - e.x) - Math.PI / 2);
+  ctx.drawImage(fl ? tur.white : tur.img, -tur.w / 2, -tur.h / 2, tur.w, tur.h); ctx.restore();
 }
-function drawEnemy(e, sp) {
-  if (e.kind === "heli") {
-    ctx.fillStyle = "rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(e.x + 8, e.y + 14, 8, 12, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = e.flash > 0 ? "#ffffff" : REGIONS[G.reg].bomber; ctx.beginPath(); ctx.ellipse(e.x, e.y, 8, 12, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillRect(e.x - 1.5, e.y - 24, 3, 14); ctx.fillStyle = "#8fd3ff"; ctx.fillRect(e.x - 4, e.y + 4, 8, 5);
-    const a = e.t * 20; ctx.strokeStyle = "rgba(30,30,30,0.8)"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(e.x - Math.cos(a) * 18, e.y - Math.sin(a) * 18); ctx.lineTo(e.x + Math.cos(a) * 18, e.y + Math.sin(a) * 18);
-    ctx.moveTo(e.x + Math.sin(a) * 18, e.y - Math.cos(a) * 18); ctx.lineTo(e.x - Math.sin(a) * 18, e.y + Math.cos(a) * 18); ctx.stroke();
-    if (e.hp < e.maxhp) bar(e.x - 14, e.y - 22, 28, 3, e.hp / e.maxhp, "#ff5252");
-    return;
-  }
+function drawEnemy(e) {
   if (e.kind === "mine") {
     ctx.fillStyle = e.flash > 0 ? "#ffffff" : "#3c3f44";
     for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4 + e.t; ctx.fillRect(e.x + Math.cos(a) * 10 - 2, e.y + Math.sin(a) * 10 - 2, 4, 4); }
     circle(e.x, e.y, 8); ctx.fillStyle = Math.floor(e.t * 4) % 2 ? "#ff1744" : "#7f0000"; circle(e.x, e.y, 3);
     return;
   }
-  const base = e.kind === "ace" ? "ace" : e.kind === "bomber" || e.kind === "gunship" ? "bomber" : "fighter";
-  const fl = e.flash > 0 && Math.floor(e.t * 20) % 2 === 0;
-  let im = sp[base + (fl ? "W" : "")], sh = sp[base + "S"];
-  if (e.kind === "kami") { im = fl ? PL.kamiW : PL.kami; sh = PL.kamiS; }
+  const [pal, pk] = enemyPal(e.kind), s = modelSprite(KIND_MODEL[e.kind], pal, pk), fl = e.flash > 0 && Math.floor(e.t * 20) % 2 === 0;
   const rot = e.kind === "side" || e.kind === "kami" || e.kind === "gunship" || (e.kind === "diver" && e.go);
   const a = rot && (e.vx || e.vy) ? Math.atan2(e.vy, e.vx) - Math.PI / 2 : 0;
   ctx.save(); ctx.translate(e.x, e.y); if (a) ctx.rotate(a);
-  ctx.drawImage(sh, -im.width / 2 + 8, -im.height / 2 + 12);
-  ctx.drawImage(im, -im.width / 2, -im.height / 2);
+  ctx.drawImage(s.shadow, -s.w / 2 + 8, -s.h / 2 + 12, s.w, s.h);
+  ctx.drawImage(fl ? s.white : s.img, -s.w / 2, -s.h / 2, s.w, s.h);
   ctx.restore();
-  if ((e.kind === "bomber" || e.kind === "ace" || e.kind === "gunship") && e.hp < e.maxhp) bar(e.x - 16, e.y - e.r - 7, 32, 3, e.hp / e.maxhp, "#ff5252");
+  if (e.kind === "heli") {
+    const hx = e.x, hy = e.y + 3, r0 = e.t * 22;
+    ctx.strokeStyle = "rgba(25,25,25,0.7)"; ctx.lineWidth = 1.6; ctx.beginPath();
+    for (let k = 0; k < 5; k++) { const b = r0 + k * Math.PI * 2 / 5; ctx.moveTo(hx, hy); ctx.lineTo(hx + Math.cos(b) * 17, hy + Math.sin(b) * 17); }
+    ctx.stroke(); ctx.fillStyle = "#333333"; circle(hx, hy, 1.6);
+  }
+  if ((e.kind === "bomber" || e.kind === "ace" || e.kind === "gunship" || e.kind === "heli") && e.hp < e.maxhp) bar(e.x - 16, e.y - e.r - 7, 32, 3, e.hp / e.maxhp, "#ff5252");
 }
 function drawPlayer() {
   const p = G.p; if (p.dead) return;
@@ -1387,98 +1698,10 @@ function drawItem(it) {
   txt(it.kind === "H" ? "+" : it.kind, it.x, it.y + 1, 14, "#ffffff", "center", true, MONO);
 }
 function drawBoss(b) {
-  const d = b.def, hull = REGIONS[G.reg].hull, t = b.t, fl = b.flash > 0 && Math.floor(t * 20) % 2 === 0;
+  const pal = bossPal(b.kind), fl = b.flash > 0 && Math.floor(b.t * 20) % 2 === 0, art = BOSS_ART[b.kind];
   ctx.save(); ctx.translate(b.x, b.y);
-  switch (b.kind) {
-    case "K":
-      ctx.fillStyle = "rgba(255,255,255,0.3)"; ctx.fillRect(-50, -104, 100, 4);
-      poly([[0, 104], [46, 60], [48, -80], [36, -100], [-36, -100], [-48, -80], [-46, 60]], hull[0]);
-      poly([[0, 90], [36, 55], [38, -76], [28, -90], [-28, -90], [-38, -76], [-36, 55]], hull[1]);
-      ctx.fillStyle = "#4b5560"; ctx.fillRect(-14, 18, 28, 46); ctx.fillStyle = "#39424c"; ctx.fillRect(-9, 26, 18, 18);
-      ctx.fillStyle = "#2a2f36"; circle(0, 75, 8);
-      break;
-    case "A":
-      ctx.fillStyle = hull[0]; ctx.fillRect(-150, -16, 300, 32);
-      ctx.fillStyle = hull[1]; ctx.fillRect(-150, -16, 300, 8);
-      ctx.fillStyle = hull[0]; ctx.fillRect(-60, -62, 120, 14);
-      ctx.fillStyle = hull[1]; rr(-22, -62, 44, 134, 16); ctx.fill();
-      ctx.fillStyle = "#8fd3ff"; ctx.fillRect(-8, 52, 16, 10);
-      break;
-    case "B": {
-      ctx.fillStyle = "#3a3324"; ctx.fillRect(-76, -82, 26, 164); ctx.fillRect(50, -82, 26, 164);
-      ctx.fillStyle = "#231e14"; const o = (t * 30) % 10;
-      for (let y = -82; y < 78; y += 10) { ctx.fillRect(-76, y + o, 26, 3); ctx.fillRect(50, y + o, 26, 3); }
-      ctx.fillStyle = hull[0]; ctx.fillRect(-50, -74, 100, 148);
-      ctx.fillStyle = hull[1]; ctx.fillRect(-50, -74, 100, 10);
-      ctx.fillStyle = "#4a4030"; circle(0, 30, 28);
-      const a = Math.atan2(G.p.y - (b.y + 30), G.p.x - b.x);
-      ctx.save(); ctx.translate(0, 30); ctx.rotate(a); ctx.fillStyle = "#2a2418"; ctx.fillRect(0, -6, 56, 12); ctx.restore();
-      ctx.fillStyle = "#3a3324"; circle(0, 30, 14);
-      break;
-    }
-    case "V":
-      poly([[0, 78], [130, -18], [118, -50], [-118, -50], [-130, -18]], hull[0]);
-      poly([[0, 60], [100, -20], [90, -40], [-90, -40], [-100, -20]], hull[1]);
-      ctx.fillStyle = "#2f3742"; circle(0, 40, 20);
-      ctx.fillStyle = "rgba(255,82,82," + (0.6 + 0.4 * Math.sin(t * 6)) + ")"; circle(0, 40, 9);
-      break;
-    case "S":
-      ctx.fillStyle = hull[0]; ctx.beginPath(); ctx.ellipse(0, 0, 58, 112, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = hull[1]; ctx.beginPath(); ctx.ellipse(-8, -6, 40, 96, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "#2b2e3a"; ctx.fillRect(-70, -32, 24, 28); ctx.fillRect(46, -32, 24, 28); ctx.fillRect(-14, 20, 28, 56);
-      poly([[0, -100], [30, -125], [-30, -125]], "#2b2e3a");
-      ctx.strokeStyle = "rgba(160,200,255," + (0.3 + 0.3 * Math.sin(t * 9)) + ")"; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(-50, -60); ctx.lineTo(-30, -40); ctx.lineTo(-44, -20); ctx.moveTo(50, 30); ctx.lineTo(32, 50); ctx.lineTo(44, 70); ctx.stroke();
-      break;
-    case "F1": {
-      const pts = []; for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4 + Math.PI / 8; pts.push([Math.cos(a) * 128, Math.sin(a) * 100]); }
-      poly(pts, "#3a3f55"); poly(pts.map(q => [q[0] * 0.8, q[1] * 0.8]), "#5a6080");
-      ctx.strokeStyle = "#ffd54f"; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(0, 0, 70, 54, t * 0.5, 0, Math.PI * 2); ctx.stroke();
-      ctx.fillStyle = "#1c1f2c"; circle(0, 0, 34);
-      ctx.fillStyle = "rgba(124,255,255," + (0.55 + 0.4 * Math.sin(t * 5)) + ")"; circle(0, 0, 16);
-      break;
-    }
-    case "F2": {
-      poly([[-40, -10], [-104, -30], [-120, 4], [-86, 0], [-96, 22], [-40, 12]], "#1a0f1a");
-      poly([[40, -10], [104, -30], [120, 4], [86, 0], [96, 22], [40, 12]], "#1a0f1a");
-      ctx.strokeStyle = "rgba(255,40,40," + (0.35 + 0.35 * Math.sin(t * 7)) + ")"; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(0, 0, 58 + Math.sin(t * 3) * 4, 0, Math.PI * 2); ctx.stroke();
-      const im = fl ? PL.omegaW : PL.omega; ctx.drawImage(im, -im.width / 2, -im.height / 2);
-      break;
-    }
-    case "m0": { const sp = spr(G.reg), im = fl ? sp.midW : sp.mid; ctx.drawImage(im, -im.width / 2, -im.height / 2); break; }
-    case "m1":
-      ctx.fillStyle = hull[0]; ctx.fillRect(-70, -10, 140, 20); ctx.fillRect(-36, -44, 12, 84); ctx.fillRect(24, -44, 12, 84);
-      ctx.fillRect(-46, -46, 92, 8); ctx.fillStyle = hull[1]; rr(-14, -30, 28, 62, 10); ctx.fill();
-      ctx.fillStyle = "#8fd3ff"; ctx.fillRect(-6, 20, 12, 8);
-      break;
-    case "m2":
-      ctx.fillStyle = hull[0]; ctx.beginPath(); ctx.ellipse(0, 0, 32, 78, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = hull[1]; ctx.beginPath(); ctx.ellipse(-6, -4, 20, 64, 0, 0, Math.PI * 2); ctx.fill();
-      poly([[0, -70], [22, -88], [-22, -88]], "#2b2e3a"); ctx.fillStyle = "#2b2e3a"; ctx.fillRect(-8, 30, 16, 26);
-      break;
-    case "m3":
-      if (REGIONS[G.reg].ground !== "tank") {
-        poly([[0, 74], [30, 40], [30, -60], [-30, -60], [-30, 40]], hull[0]);
-        poly([[0, 62], [22, 34], [22, -52], [-22, -52], [-22, 34]], hull[1]);
-      } else {
-        ctx.fillStyle = "#2a2418"; ctx.fillRect(-34, -70, 14, 140); ctx.fillRect(20, -70, 14, 140);
-        ctx.fillStyle = hull[0]; ctx.fillRect(-22, -64, 44, 128); ctx.fillStyle = hull[1]; ctx.fillRect(-22, -64, 44, 8);
-      }
-      break;
-    case "m4": {
-      ctx.strokeStyle = "rgba(255,213,79,0.5)"; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(0, 0, 42, 22, 0, 0, Math.PI * 2); ctx.stroke();
-      const im = fl ? PL.leadW : PL.lead; ctx.drawImage(im, -im.width / 2, -im.height / 2);
-      break;
-    }
-    case "m5": {
-      const pts = []; for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4 + Math.PI / 8; pts.push([Math.cos(a) * 54, Math.sin(a) * 44]); }
-      poly(pts, hull[0]); poly(pts.map(q => [q[0] * 0.75, q[1] * 0.75]), hull[1]);
-      ctx.fillStyle = "#2a2e35"; circle(0, 0, 14); ctx.fillStyle = "rgba(255,138,128," + (0.5 + 0.4 * Math.sin(t * 5)) + ")"; circle(0, 0, 6);
-      break;
-    }
-  }
-  if (fl && b.kind !== "F2" && b.kind !== "m0" && b.kind !== "m4") { ctx.fillStyle = "rgba(255,255,255,0.22)"; for (const r of d.rects) ctx.fillRect(r[0], r[1], r[2] - r[0], r[3] - r[1]); }
+  art(painter(ctx, pal, null, false), pal, b);
+  if (fl) { ctx.globalAlpha = 0.4; art(painter(ctx, pal, "#ffffff", false), pal, b); ctx.globalAlpha = 1; }
   for (const q of b.parts) {
     if (!q.alive) { ctx.fillStyle = "#1a1a1a"; circle(q.dx, q.dy, q.r * 0.8); ctx.fillStyle = "#ff7043"; circle(q.dx, q.dy, 2); continue; }
     ctx.fillStyle = q.flash > 0 ? "#ffffff" : "#2f353d"; circle(q.dx, q.dy, q.r);
@@ -2003,7 +2226,7 @@ function resize() {
   safeT = Math.max(0, ((parseFloat(cs.paddingTop) || 0) - offY) / S);
   safeB = Math.max(0, ((parseFloat(cs.paddingBottom) || 0) - offY) / S);
   if (G && G.p) { G.p.x = clamp(G.p.x, 14, W - 14); G.p.y = clamp(G.p.y, safeT + 70, H - safeB - 24); }
-  hud.key = ""; wake();
+  hud.key = ""; for (const k in MSPR) delete MSPR[k]; wake();
 }
 resize();
 window.addEventListener("resize", resize);
